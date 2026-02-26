@@ -1,0 +1,19 @@
+# Python
+venv/
+__pycache__/
+*.pyc
+
+# Mac
+.DS_Store
+
+# PyCharm
+.idea/
+
+# Database
+bot.sqlite3
+bot.sqlite3-shm
+bot.sqlite3-wal
+
+# Env
+.env
+
