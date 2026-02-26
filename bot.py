@@ -1,3 +1,4 @@
+import os
 import asyncio
 import logging
 import sqlite3
@@ -14,7 +15,9 @@ from aiogram.client.default import DefaultBotProperties
 from aiogram.types import InputMediaPhoto
 # ================= НАСТРОЙКИ =================
 
-TOKEN = "8194631307:AAGNbI5VEFAaiwEykbbO5v2RdcdglA5LHpg"
+TOKEN = os.getenv("BOT_TOKEN")
+if not TOKEN:
+    raise RuntimeError("BOT_TOKEN is not set. Put it in .env or environment variables.")
 ADMIN_IDS = [313372023, 893519113]  # добавь сюда нужные ID
 
 DB_PATH = "bot.sqlite3"
