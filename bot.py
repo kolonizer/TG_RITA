@@ -411,6 +411,10 @@ async def reset_cmd(message: Message):
     await reset_user_db(message.from_user.id)
     await message.answer("Ок 👌 Я забыл(а) тебя. Можешь снова нажать /start")
 
+@dp.message(F.video)
+async def get_video_id(message: Message):
+    await message.answer(f"VIDEO_FILE_ID:\n<code>{message.video.file_id}</code>")
+
 @dp.callback_query(F.data == "details")
 async def details_cb(callback: CallbackQuery):
     user_id = callback.from_user.id
