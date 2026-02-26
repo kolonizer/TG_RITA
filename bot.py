@@ -22,7 +22,7 @@ ADMIN_IDS = [313372023, 893519113]  # добавь сюда нужные ID
 
 DB_PATH = "bot.sqlite3"
 
-VIDEO_ENABLED = True
+VIDEO_ENABLED = False
 VIDEO_FILE_ID = "СЮДА_FILE_ID_ВИДЕО_КОГДА_БУДЕТ"
 
 TEST_MODE = False
