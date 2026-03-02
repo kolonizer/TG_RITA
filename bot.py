@@ -488,6 +488,25 @@ async def receipt_photo(message: Message):
 
     await message.answer("Спасибо! ✅ Чек получен. Я скоро подтвержу оплату 💛")
 
+@dp.message(F.text == "/stats")
+async def stats_cmd(message: Message):
+    if message.from_user.id not in ADMIN_IDS:
+        return
+
+    total = (await db_fetchone("SELECT COUNT(*) FROM users"))[0]
+    paid = (await db_fetchone("SELECT COUNT(*) FROM users WHERE paid=1"))[0]
+    awaiting = (await db_fetchone("SELECT COUNT(*) FROM users WHERE awaiting_receipt=1"))[0]
+
+    conv = (paid / total * 100) if total else 0
+
+    await message.answer(
+        "📊 <b>Статистика</b>\n"
+        f"👥 Всего начали чат: <b>{total}</b>\n"
+        f"✅ Оплатили (paid=1): <b>{paid}</b>\n"
+        f"🧾 Ждём чек: <b>{awaiting}</b>\n"
+        f"📈 Конверсия: <b>{conv:.1f}%</b>"
+    )
+
 @dp.message(F.document)
 async def receipt_document(message: Message):
     user_id = message.from_user.id
