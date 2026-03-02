@@ -25,7 +25,7 @@ DB_PATH = "bot.sqlite3"
 VIDEO_ENABLED = True
 VIDEO_FILE_ID = "BAACAgIAAxkBAAIBnWmlig1rlhpT9x6c0xGlwdKasMIyAAIxkwACb24RSVk0ks25wXd2OgQ"
 
-TEST_MODE = True
+TEST_MODE = False
 TEST_DELAY_SECONDS = 10  # 1 минута на шаг (для теста)
 
 DISCOUNT_PRICE = 2030
