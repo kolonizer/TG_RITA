@@ -22,8 +22,8 @@ ADMIN_IDS = [313372023, 893519113]  # добавь сюда нужные ID
 
 DB_PATH = "bot.sqlite3"
 
-VIDEO_ENABLED = False
-VIDEO_FILE_ID = "СЮДА_FILE_ID_ВИДЕО_КОГДА_БУДЕТ"
+VIDEO_ENABLED = True
+VIDEO_FILE_ID = "BAACAgIAAxkBAAIBnWmlig1rlhpT9x6c0xGlwdKasMIyAAIxkwACb24RSVk0ks25wXd2OgQ"
 
 TEST_MODE = True
 TEST_DELAY_SECONDS = 10  # 1 минута на шаг (для теста)
@@ -414,6 +414,7 @@ async def reset_cmd(message: Message):
 @dp.message(F.video)
 async def get_video_id(message: Message):
     await message.answer(f"VIDEO_FILE_ID:\n<code>{message.video.file_id}</code>")
+
 
 @dp.callback_query(F.data == "details")
 async def details_cb(callback: CallbackQuery):
