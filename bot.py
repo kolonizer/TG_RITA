@@ -2,6 +2,7 @@ import os
 import asyncio
 import logging
 import sqlite3
+import traceback
 from datetime import datetime, timedelta, timezone
 from typing import Optional, List, Tuple
 
@@ -11,22 +12,23 @@ from aiogram.types import (
 )
 from aiogram.filters import CommandStart
 from aiogram.client.default import DefaultBotProperties
-
 from aiogram.types import InputMediaPhoto
+from aiogram.exceptions import TelegramForbiddenError, TelegramBadRequest
+
 # ================= НАСТРОЙКИ =================
 
 TOKEN = os.getenv("BOT_TOKEN")
 if not TOKEN:
     raise RuntimeError("BOT_TOKEN is not set. Put it in .env or environment variables.")
-ADMIN_IDS = [313372023, 893519113]  # добавь сюда нужные ID
 
+ADMIN_IDS = [313372023, 893519113]
 DB_PATH = "bot.sqlite3"
 
 VIDEO_ENABLED = True
 VIDEO_FILE_ID = "BAACAgIAAxkBAAIBnWmlig1rlhpT9x6c0xGlwdKasMIyAAIxkwACb24RSVk0ks25wXd2OgQ"
 
 TEST_MODE = False
-TEST_DELAY_SECONDS = 10  # 1 минута на шаг (для теста)
+TEST_DELAY_SECONDS = 10
 
 DISCOUNT_PRICE = 2030
 FULL_PRICE = 2900
@@ -76,13 +78,18 @@ DETAILS_TEXT = (
 
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s | %(levelname)s | %(message)s"
+    format="%(asctime)s | %(levelname)s | %(message)s",
+    handlers=[
+        logging.FileHandler("bot.log", encoding="utf-8"),
+        logging.StreamHandler()
+    ]
 )
 
 def delay(minutes: int = 0, hours: int = 0) -> int:
     if TEST_MODE:
         return TEST_DELAY_SECONDS
     return minutes * 60 + hours * 3600
+
 
 # ============================================
 
@@ -114,6 +121,7 @@ text_9 = "<b>КАЖЕТСЯ, ЭТО НЕ МОЁ…</b>👀\n\nИ в этот м�
 
 text_10 = "<b>ЧТО ПОМОГЛО МНЕ НАЙТИ СЕБЯ?</b>\n\nВ какой-то момент я осознала, что постоянно мыслю категориями НАДО:\n«Надо выпить кофе»\n«Надо приготовить ужин»\n«Надо надеть эту кофточку, давно её не носила»\n\nА это только мелочи. Представляете, что было, когда дело касалось работы, учёбы и тд?🤦🏻‍♀️\n\nВместо того, чтобы задуматься, чего я хочу (банально съесть на завтрак кашу или яичницу), я только диктовала себе, что нужно делать.\n\nЭто осознание настолько поразило меня, что из глаз потекли слёзы…Как же я, будучи такой ✨осознанной, проработанной и вообще самой умной✨ настолько сильно разучилась чувствовать свои желания?\n\n<i>В этот момент Коля спросил у меня:</i>\n- А чего хочешь прямо сейчас?\n- Гулять, - ответила я.\n- Пойдём!🫶🏻\n\nВ этот момент я совсем разрыдалась от удивления, что можно вот так просто забить на то, что НАДО ложиться спать (был уже час ночи), и вообще он же не любит гулять в холодную погоду…Оказалось, можно просто заглянуть внутрь себя и позволить хотя бы на секунду задуматься, чего я сейчас хочу. И просто пойти гулять.\n\nЯ нашла для себя простое решение: <b>НАЧАТЬ ЧУВСТВОВАТЬ СВОИ «ХОЧУ»</b>🤍\n\nРегулярно на протяжении дня спрашивать у себя:\n«Чем я хочу позавтракать?»\n«Что я хочу надеть?»\n«Чем я хочу сейчас заняться?» и тд\n\nВажно было научиться ХОТЕТЬ что-то делать, так как дофамин вырабатывается при достижении цели, основанной на наших желаниях.\nВысокий дофамин = 📈 энергии и сил → успеваешь больше\n\nПоэтому важно создавать себе дофаминовые «хочу»\n\n<b>Дофаминовая цепочка</b> выглядит так: <b>хочу - делаю - получаю - радуюсь</b>\n\n<i>Так можно и счастливыми стать🥹</i>\nТы со мной?"
 
+
 # ================= КНОПКИ =================
 
 def kb_action(label: str, cb: str) -> InlineKeyboardMarkup:
@@ -137,6 +145,7 @@ def kb_details_go_only() -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text="Я ИДУ!", callback_data="pay")]
     ])
 
+
 # ================= SQLite =================
 
 _db_lock = asyncio.Lock()
@@ -150,6 +159,9 @@ def dt_to_ts(dt: datetime) -> int:
 
 async def db_init():
     global _conn
+
+    logging.info(f"Using DB path: {os.path.abspath(DB_PATH)}")
+
     _conn = sqlite3.connect(DB_PATH, check_same_thread=False)
     _conn.execute("PRAGMA journal_mode=WAL;")
     _conn.execute("PRAGMA synchronous=NORMAL;")
@@ -177,18 +189,15 @@ async def db_init():
     );
     """)
 
-    # На всякий — мягкая миграция, если БД уже существовала
     await _ensure_column("users", "discount_until", "INTEGER")
     await _ensure_column("users", "awaiting_receipt", "INTEGER DEFAULT 0")
     await _ensure_column("users", "paid", "INTEGER DEFAULT 0")
 
     _conn.commit()
 
-    # 👇 удаляем шаг 99 из очереди для всех (чтобы он не улетел после рестарта)
     await db_exec("DELETE FROM queue WHERE step=99")
 
 async def _ensure_column(table: str, col: str, coltype: str):
-    # sqlite pragma table_info
     async with _db_lock:
         cols = [r[1] for r in _conn.execute(f"PRAGMA table_info({table});").fetchall()]
         if col not in cols:
@@ -211,13 +220,10 @@ async def db_fetchall(sql: str, params=()):
         cur = _conn.execute(sql, params)
         return cur.fetchall()
 
+
 # ================= ПЛАН ВОРОНКИ =================
 
 def build_schedule(start_dt: datetime) -> List[Tuple[int, int, int]]:
-    """
-    Возвращает список (step, run_at_ts, discount_until_ts)
-    discount_until_ts считается как (шаг2 + 1 час)
-    """
     t0 = start_dt
 
     t2 = t0 + timedelta(seconds=delay(minutes=40))
@@ -295,24 +301,23 @@ async def is_awaiting_receipt(user_id: int) -> bool:
     return bool(row and int(row[0]) == 1)
 
 async def confirm_purchase(user_id: int):
-    # покупка считается совершенной только после чека
     await db_exec("UPDATE users SET paid=1, awaiting_receipt=0 WHERE user_id=?", (user_id,))
-    # останавливаем воронку
     now_ts = dt_to_ts(utcnow())
     await db_exec("UPDATE queue SET sent_at=? WHERE user_id=? AND sent_at IS NULL", (now_ts, user_id))
+
 
 # ================= ОТПРАВКА ПО ШАГУ =================
 
 async def send_step(user_id: int, step: int):
     if await is_paid(user_id):
+        logging.info(f"Skip paid user={user_id} step={step}")
         return
 
+    logging.info(f"send_step user={user_id} step={step}")
+
     if step == 2:
-        # 1) отправляем альбом фото
         media = [InputMediaPhoto(media=fid) for fid in STEP2_PHOTOS]
         await bot.send_media_group(chat_id=user_id, media=media)
-
-        # 2) отправляем текст как раньше + кнопку
         await bot.send_message(
             chat_id=user_id,
             text=text_2,
@@ -334,6 +339,9 @@ async def send_step(user_id: int, step: int):
         await bot.send_message(user_id, text_9, reply_markup=kb_action("ДЕЛАЕМ!", "pay"))
     elif step == 10:
         await bot.send_message(user_id, text_10, reply_markup=kb_action("ЛЕТС ГОУ", "pay"))
+    else:
+        logging.warning(f"Unknown step={step} for user={user_id}")
+
 
 # ================= ВОРКЕР ОЧЕРЕДИ =================
 
@@ -345,33 +353,45 @@ async def queue_worker():
             rows = await db_fetchall(
                 "SELECT id, user_id, step FROM queue "
                 "WHERE sent_at IS NULL AND run_at <= ? "
-                "ORDER BY run_at ASC LIMIT 20",
+                "ORDER BY run_at ASC LIMIT 50",
                 (now_ts,)
             )
+
+            logging.info(f"QUEUE CHECK now={now_ts} due_rows={len(rows)}")
 
             if not rows:
                 await asyncio.sleep(1 if TEST_MODE else 3)
                 continue
 
             for qid, user_id, step in rows:
-                # пометим, чтобы избежать дублей при рестарте
+                logging.info(f"QUEUE SEND qid={qid} user={user_id} step={step}")
+
                 await db_exec("UPDATE queue SET sent_at=? WHERE id=?", (now_ts, qid))
+
                 try:
                     await send_step(user_id, step)
+
+                except TelegramForbiddenError as e:
+                    logging.error(f"Permanent TelegramForbiddenError user={user_id} step={step}: {e}")
+
+                except TelegramBadRequest as e:
+                    logging.error(f"Permanent TelegramBadRequest user={user_id} step={step}: {e}")
+
                 except Exception as e:
-                    logging.error(f"Send step error user={user_id} step={step}: {e}")
-                    # откат
+                    logging.error(f"Temporary send error user={user_id} step={step}: {e}")
+                    logging.error(traceback.format_exc())
                     await db_exec("UPDATE queue SET sent_at=NULL WHERE id=?", (qid,))
 
         except Exception as e:
             logging.error(f"Worker loop error: {e}")
+            logging.error(traceback.format_exc())
 
-        await asyncio.sleep(0)
+        await asyncio.sleep(0.2)
+
 
 # ================= PAY FLOW =================
 
 def payment_message(price: int) -> str:
-
     if price == DISCOUNT_PRICE:
         price_text = f"<s>{FULL_PRICE} рублей</s> <b>{DISCOUNT_PRICE} рублей</b>"
     else:
@@ -386,6 +406,8 @@ def payment_message(price: int) -> str:
         "Получатель: Лобанова Маргарита Сергеевна\n\n"
         "После оплаты пришли чек сюда, я проверю его и добавлю тебя в чат курса✨"
     )
+
+
 # ================= HANDLERS =================
 
 @dp.message(CommandStart())
@@ -397,7 +419,6 @@ async def start(message: Message):
         await message.answer("Ты уже проходишь воронку 💛\nЕсли хочешь заново — напиши /reset")
         return
 
-    # 1: сразу
     if VIDEO_ENABLED:
         await message.answer_video(video=VIDEO_FILE_ID, caption=text_1)
     else:
@@ -415,16 +436,13 @@ async def reset_cmd(message: Message):
 async def get_video_id(message: Message):
     await message.answer(f"VIDEO_FILE_ID:\n<code>{message.video.file_id}</code>")
 
-
 @dp.callback_query(F.data == "details")
 async def details_cb(callback: CallbackQuery):
     user_id = callback.from_user.id
 
-    # 1) альбом фото
     media = [InputMediaPhoto(media=fid) for fid in STEP2_PHOTOS]
     await bot.send_media_group(chat_id=user_id, media=media)
 
-    # 2) текст + кнопка
     await callback.message.answer(
         DETAILS_TEXT,
         reply_markup=kb_action("КУДА ПЛАТИТЬ?", "pay")
@@ -458,7 +476,6 @@ async def send_receipt_cb(callback: CallbackQuery):
     await callback.message.answer("Отправь, пожалуйста, фото или файл чека сюда 👇")
     await callback.answer()
 
-# 3) Принимаем чек только если нажата кнопка "ОТПРАВИТЬ ЧЕК"
 @dp.message(F.photo)
 async def receipt_photo(message: Message):
     user_id = message.from_user.id
@@ -466,8 +483,6 @@ async def receipt_photo(message: Message):
         return
 
     price = await get_current_price(user_id)
-
-    # берём самое большое фото
     photo = message.photo[-1].file_id
 
     caption = (
@@ -484,28 +499,9 @@ async def receipt_photo(message: Message):
             await bot.send_photo(admin_id, photo=photo, caption=caption)
         except Exception as e:
             logging.warning(f"Не удалось отправить админу {admin_id}: {e}")
+
     await confirm_purchase(user_id)
-
     await message.answer("Спасибо! ✅ Чек получен. Я скоро подтвержу оплату 💛")
-
-@dp.message(F.text == "/stats")
-async def stats_cmd(message: Message):
-    if message.from_user.id not in ADMIN_IDS:
-        return
-
-    total = (await db_fetchone("SELECT COUNT(*) FROM users"))[0]
-    paid = (await db_fetchone("SELECT COUNT(*) FROM users WHERE paid=1"))[0]
-    awaiting = (await db_fetchone("SELECT COUNT(*) FROM users WHERE awaiting_receipt=1"))[0]
-
-    conv = (paid / total * 100) if total else 0
-
-    await message.answer(
-        "📊 <b>Статистика</b>\n"
-        f"👥 Всего начали чат: <b>{total}</b>\n"
-        f"✅ Оплатили (paid=1): <b>{paid}</b>\n"
-        f"🧾 Ждём чек: <b>{awaiting}</b>\n"
-        f"📈 Конверсия: <b>{conv:.1f}%</b>"
-    )
 
 @dp.message(F.document)
 async def receipt_document(message: Message):
@@ -532,8 +528,50 @@ async def receipt_document(message: Message):
             logging.warning(f"Не удалось отправить админу {admin_id}: {e}")
 
     await confirm_purchase(user_id)
-
     await message.answer("Спасибо! ✅ Чек получен. Я скоро подтвержу оплату 💛")
+
+@dp.message(F.text == "/stats")
+async def stats_cmd(message: Message):
+    if message.from_user.id not in ADMIN_IDS:
+        return
+
+    total = (await db_fetchone("SELECT COUNT(*) FROM users"))[0]
+    paid = (await db_fetchone("SELECT COUNT(*) FROM users WHERE paid=1"))[0]
+    awaiting = (await db_fetchone("SELECT COUNT(*) FROM users WHERE awaiting_receipt=1"))[0]
+
+    conv = (paid / total * 100) if total else 0
+
+    await message.answer(
+        "📊 <b>Статистика</b>\n"
+        f"👥 Всего начали чат: <b>{total}</b>\n"
+        f"✅ Оплатили (paid=1): <b>{paid}</b>\n"
+        f"🧾 Ждём чек: <b>{awaiting}</b>\n"
+        f"📈 Конверсия: <b>{conv:.1f}%</b>"
+    )
+
+@dp.message(F.text == "/debug_queue")
+async def debug_queue_cmd(message: Message):
+    if message.from_user.id not in ADMIN_IDS:
+        return
+
+    rows = await db_fetchall(
+        "SELECT user_id, step, run_at FROM queue "
+        "WHERE sent_at IS NULL AND run_at <= ? "
+        "ORDER BY run_at ASC LIMIT 20",
+        (dt_to_ts(utcnow()),)
+    )
+
+    if not rows:
+        await message.answer("Просроченных сообщений нет ✅")
+        return
+
+    lines = ["<b>Просроченные сообщения:</b>"]
+    for user_id, step, run_at in rows:
+        run_dt = datetime.fromtimestamp(run_at, tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+        lines.append(f"user={user_id}, step={step}, run_at={run_dt}")
+
+    await message.answer("\n".join(lines))
+
 
 # ================= ЗАПУСК =================
 
