@@ -73,7 +73,7 @@ class MessageTests(unittest.TestCase):
                 )
 
 
-class DiscountTests(unittest.IsolatedAsyncioTestCase):
+class DatabaseTestCase(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.db_path = str(Path(self.tmp.name) / "bot.sqlite3")
@@ -102,6 +102,9 @@ class DiscountTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(app, "utcnow", return_value=sent or self.sent):
             await app.send_step(user_id, 2)
 
+
+
+class DiscountTests(DatabaseTestCase):
     async def test_no_discount_before_successful_delivery(self):
         with patch.object(app, "utcnow", return_value=self.sent - timedelta(hours=2)):
             self.assertEqual(await app.get_current_price(101), app.FULL_PRICE)
@@ -221,7 +224,7 @@ class DiscountTests(unittest.IsolatedAsyncioTestCase):
         await app.db_init()
         self.assertIsNone((await app.db_fetchone("SELECT discount_until FROM users WHERE user_id=101"))[0])
         columns = [row[1] for row in app._conn.execute("PRAGMA table_info(users)")]
-        self.assertEqual(columns, ["user_id", "username", "started_at", "paid", "discount_until", "awaiting_receipt"])
+        self.assertEqual(columns, ["user_id", "username", "started_at", "paid", "discount_until", "awaiting_receipt", "receipt_received_at"])
         self.assertEqual((await app.db_fetchone("SELECT COUNT(*) FROM queue WHERE user_id=101"))[0], 10)
 
     async def test_paid_user_is_not_sent_offer(self):
@@ -304,6 +307,52 @@ class TestModeTests(DiscountTests):
         self.assertEqual(schedule[0][1], int(self.sent.timestamp()) + 40 * 60)
         self.assertEqual(schedule[1][1] - schedule[0][1], 24 * 3600)
         self.assertEqual(app.discount_duration(101), 3600)
+
+
+class StatisticsTests(DatabaseTestCase):
+    async def test_reset_starts_period_without_changing_users_or_queue(self):
+        await app.confirm_purchase(101)
+        before_users = await app.db_fetchall("SELECT * FROM users")
+        before_queue = await app.db_fetchall("SELECT * FROM queue")
+        admin_message = SimpleNamespace(from_user=SimpleNamespace(id=app.ADMIN_IDS[0]), answer=AsyncMock())
+        with patch.object(app, "utcnow", return_value=self.sent + timedelta(days=30)):
+            await app.reset_stats_cmd(admin_message)
+        snapshot = app.get_stats(app._conn)
+        self.assertEqual(snapshot[1:3], (0, 0))
+        self.assertEqual(await app.db_fetchall("SELECT * FROM users"), before_users)
+        self.assertEqual(await app.db_fetchall("SELECT * FROM queue"), before_queue)
+        app._conn.close()
+        await app.db_init()
+        self.assertEqual(app.get_stats(app._conn), snapshot)
+
+    async def test_new_users_and_receipts_count_from_fractional_boundary(self):
+        app.reset_stats(app._conn, self.sent.timestamp())
+        with patch.object(app, "utcnow", return_value=self.sent + timedelta(microseconds=1)):
+            await app.enqueue_user(202, "new")
+            await app.confirm_purchase(202)
+        self.assertEqual(app.get_stats(app._conn)[1:], (1, 1, 0, 2))
+        await app.set_awaiting_receipt(101, 1)
+        app.reset_stats(app._conn, (self.sent + timedelta(seconds=1)).timestamp())
+        self.assertEqual(app.get_stats(app._conn)[1:], (0, 0, 1, 2))
+
+    async def test_non_admin_cannot_read_or_reset_stats(self):
+        message = SimpleNamespace(from_user=SimpleNamespace(id=101), answer=AsyncMock())
+        before = app.get_stats(app._conn)
+        await app.reset_stats_cmd(message)
+        await app.stats_cmd(message)
+        message.answer.assert_not_awaited()
+        self.assertEqual(app.get_stats(app._conn), before)
+
+    async def test_stats_and_status_show_same_actual_counts(self):
+        await app.confirm_purchase(101)
+        message = SimpleNamespace(from_user=SimpleNamespace(id=app.ADMIN_IDS[0]), answer=AsyncMock())
+        await app.stats_cmd(message)
+        stats_text = message.answer.await_args.args[0]
+        self.assertIn('Получено чеков за период: <b>1</b>', stats_text)
+        self.assertIn('Начали воронку за период: <b>1</b>', stats_text)
+        await app.status_cmd(message)
+        self.assertIn(stats_text, message.answer.await_args.args[0])
+        telegram_text(message.answer.await_args.args[0])
 
 
 if __name__ == "__main__":

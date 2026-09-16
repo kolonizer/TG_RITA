@@ -6,6 +6,8 @@ import traceback
 from datetime import datetime, timedelta, timezone
 from typing import Optional, List, Tuple
 
+from bot_stats import init_stats, get_stats, reset_stats, format_stats
+
 from aiogram import Bot, Dispatcher, F
 from aiogram.types import (
     Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
@@ -216,6 +218,7 @@ async def db_init():
     await _ensure_column("users", "awaiting_receipt", "INTEGER DEFAULT 0")
     await _ensure_column("users", "paid", "INTEGER DEFAULT 0")
 
+    init_stats(_conn)
     _conn.commit()
 
     # Older versions precomputed a deadline at /start, before delivery.
@@ -273,7 +276,7 @@ def build_schedule(start_dt: datetime, user_id: Optional[int] = None) -> List[Tu
 
 async def enqueue_user(user_id: int, username: Optional[str]):
     now = utcnow()
-    now_ts = dt_to_ts(now)
+    now_ts = now.timestamp()
 
     existing = await db_fetchone("SELECT user_id FROM users WHERE user_id=?", (user_id,))
     schedule = build_schedule(now, user_id=user_id)
@@ -325,7 +328,7 @@ async def is_awaiting_receipt(user_id: int) -> bool:
     return bool(row and int(row[0]) == 1)
 
 async def confirm_purchase(user_id: int):
-    await db_exec("UPDATE users SET paid=1, awaiting_receipt=0 WHERE user_id=?", (user_id,))
+    await db_exec("UPDATE users SET paid=1, awaiting_receipt=0, receipt_received_at=? WHERE user_id=?", (utcnow().timestamp(), user_id))
     now_ts = dt_to_ts(utcnow())
     await db_exec("UPDATE queue SET sent_at=? WHERE user_id=? AND sent_at IS NULL", (now_ts, user_id))
 
@@ -583,13 +586,15 @@ async def status_cmd(message: Message):
     mode = "тестовый" if is_test_user(user_id) else "обычный"
     interval = "10 секунд" if is_test_user(user_id) else "40 минут после видео, далее 24/48 часов"
     discount = f"осталось {remaining:.1f} сек." if remaining > 0 else "не действует"
+    async with _db_lock:
+        statistics = format_stats(get_stats(_conn))
     await message.answer(
         f"Бот работает ✅\nРежим: <b>{mode}</b>\n"
         f"Новые сообщения: {interval}\n"
         f"Скидка для новых предложений: {discount_duration(user_id)} сек.\n"
         f"Твоя текущая скидка: {discount}\n\n"
         "Сохранённые таймеры не пересчитываются при переключении.\n"
-        "Для нового прохождения: /reset, затем /start."
+        "Для нового прохождения: /reset, затем /start.\n\n" + statistics
     )
 
 
@@ -598,19 +603,19 @@ async def stats_cmd(message: Message):
     if message.from_user.id not in ADMIN_IDS:
         return
 
-    total = (await db_fetchone("SELECT COUNT(*) FROM users"))[0]
-    paid = (await db_fetchone("SELECT COUNT(*) FROM users WHERE paid=1"))[0]
-    awaiting = (await db_fetchone("SELECT COUNT(*) FROM users WHERE awaiting_receipt=1"))[0]
+    async with _db_lock:
+        statistics = format_stats(get_stats(_conn))
+    await message.answer(statistics)
 
-    conv = (paid / total * 100) if total else 0
 
-    await message.answer(
-        "📊 <b>Статистика</b>\n"
-        f"👥 Всего начали чат: <b>{total}</b>\n"
-        f"✅ Оплатили (paid=1): <b>{paid}</b>\n"
-        f"🧾 Ждём чек: <b>{awaiting}</b>\n"
-        f"📈 Конверсия: <b>{conv:.1f}%</b>"
-    )
+@dp.message(F.text == "/reset_stats")
+async def reset_stats_cmd(message: Message):
+    if message.from_user.id not in ADMIN_IDS:
+        return
+    async with _db_lock:
+        reset_stats(_conn, utcnow().timestamp())
+    await message.answer("Начат новый период статистики ✅\nПользователи, чеки и таймеры сохранены. Посмотреть: /stats или /status.")
+
 
 @dp.message(F.text == "/debug_queue")
 async def debug_queue_cmd(message: Message):
