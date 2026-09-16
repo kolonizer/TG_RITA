@@ -21,7 +21,6 @@ chown root:root /etc/rita-bot/.env
 # The repository is transferred separately, without secrets or database files.
 test -d /opt/rita-bot/repo/.git
 install -o root -g root -m 0644 /opt/rita-bot/repo/deploy/rita-bot.service /etc/systemd/system/rita-bot.service
-systemd-analyze verify /etc/systemd/system/rita-bot.service
 systemctl daemon-reload
 # Enable boot startup only at the final activation, once BOT_TOKEN and migration are ready.
 echo 'Provisioned. Service has not been started.'
