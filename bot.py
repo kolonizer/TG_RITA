@@ -32,6 +32,7 @@ VIDEO_FILE_ID = "BAACAgIAAxkBAAIBnWmlig1rlhpT9x6c0xGlwdKasMIyAAIxkwACb24RSVk0ks2
 
 TEST_MODE = os.getenv("TEST_MODE", "false").strip().lower() in {"1", "true", "yes", "on"}
 TEST_DELAY_SECONDS = 10
+TEST_DISCOUNT_SECONDS = 60
 
 DISCOUNT_PRICE = (2333, 3888)
 FULL_PRICE = (3333, 5555)
@@ -94,7 +95,7 @@ def is_test_user(user_id: Optional[int]) -> bool:
 
 
 def discount_duration(user_id: int) -> int:
-    return TEST_DELAY_SECONDS if is_test_user(user_id) else DISCOUNT_SECONDS
+    return TEST_DISCOUNT_SECONDS if is_test_user(user_id) else DISCOUNT_SECONDS
 
 
 def delay(minutes: int = 0, hours: int = 0, user_id: Optional[int] = None) -> int:
@@ -574,7 +575,7 @@ async def test_mode_cmd(message: Message):
     async with _db_lock:
         set_test_mode(_conn, enabled)
         TEST_MODE = enabled
-    mode = "Тестовый режим включён: интервалы и скидка по 10 секунд для администраторов." if enabled else "Обычный режим включён: скидка 60 минут, сообщения по обычному расписанию."
+    mode = "Тестовый режим включён: сообщения каждые 10 секунд, скидка 60 секунд для администраторов." if enabled else "Обычный режим включён: скидка 60 минут, сообщения по обычному расписанию."
     await message.answer(
         mode + "\nВыбор сохранён и останется после перезапуска.\n"
         "Для нового прохождения с выбранными таймерами: /reset, затем /start.\n"

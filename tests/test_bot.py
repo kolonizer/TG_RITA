@@ -271,7 +271,7 @@ class TestModeTests(DiscountTests):
         self.mode_patch.stop()
         await super().asyncTearDown()
 
-    async def test_admin_offer_and_discount_use_ten_seconds(self):
+    async def test_admin_messages_use_ten_seconds_and_discount_one_minute(self):
         admin = app.ADMIN_IDS[0]
         with patch.object(app, "utcnow", return_value=self.sent):
             await app.enqueue_user(admin, "test_admin")
@@ -280,13 +280,26 @@ class TestModeTests(DiscountTests):
         )
         self.assertEqual([row[0] for row in schedule], [int(self.sent.timestamp()) + 10 * i for i in range(1, 10)])
         await self.deliver(admin)
-        for elapsed, expected in [(9.999999, app.DISCOUNT_PRICE), (10, app.FULL_PRICE)]:
+        for elapsed, expected in [(59.999999, app.DISCOUNT_PRICE), (60, app.FULL_PRICE), (60.000001, app.FULL_PRICE)]:
             with patch.object(app, "utcnow", return_value=self.sent + timedelta(seconds=elapsed)):
                 self.assertEqual(await app.get_current_price(admin), expected)
+                callback = SimpleNamespace(
+                    from_user=SimpleNamespace(id=admin),
+                    message=SimpleNamespace(answer=AsyncMock()), answer=AsyncMock(),
+                )
+                await app.pay_cb(callback)
+                callback.message.answer.assert_awaited_once_with(
+                    app.payment_message(expected), reply_markup=app.kb_pay_with_receipt(expected)
+                )
+        self.assertEqual((await app.db_fetchone(
+            "SELECT discount_until FROM users WHERE user_id=?", (admin,)
+        ))[0], self.sent.timestamp() + 60)
         app._conn.close()
         await app.db_init()
-        with patch.object(app, "TEST_MODE", False), patch.object(app, "utcnow", return_value=self.sent + timedelta(seconds=10)):
-            self.assertEqual(await app.get_current_price(admin), app.FULL_PRICE)
+        with patch.object(app, "TEST_MODE", False):
+            for elapsed, expected in [(59.999999, app.DISCOUNT_PRICE), (60, app.FULL_PRICE)]:
+                with patch.object(app, "utcnow", return_value=self.sent + timedelta(seconds=elapsed)):
+                    self.assertEqual(await app.get_current_price(admin), expected)
 
     async def test_normal_mode_restores_original_schedule_for_admin(self):
         admin = app.ADMIN_IDS[0]
@@ -317,7 +330,7 @@ class ModeCommandTests(DatabaseTestCase):
             app._conn.close()
             await app.db_init()
             self.assertEqual(app.TEST_MODE, enabled)
-            self.assertEqual(app.discount_duration(admin), 10 if enabled else 3600)
+            self.assertEqual(app.discount_duration(admin), 60 if enabled else 3600)
             self.assertEqual(await app.db_fetchall("SELECT * FROM users"), before_users)
             self.assertEqual(await app.db_fetchall("SELECT * FROM queue"), before_queue)
             message.answer.assert_awaited_once()
