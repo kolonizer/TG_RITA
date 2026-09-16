@@ -1,5 +1,6 @@
 import asyncio
 import os
+import sqlite3
 import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
@@ -187,22 +188,17 @@ class DiscountTests(DatabaseTestCase):
                 "SELECT sent_at FROM queue WHERE id=?", (qid,)
             ))[0])
         self.fake_bot.send_message.side_effect = check_pending
-        with patch.object(app, "utcnow", return_value=self.sent), patch.object(
-            app.asyncio, "sleep", side_effect=asyncio.CancelledError
-        ):
-            with self.assertRaises(asyncio.CancelledError):
-                await app.queue_worker()
+        with patch.object(app, "utcnow", return_value=self.sent), patch.object(app, "QUEUE_SEND_TIMEOUT", 1):
+            await app.process_queue_item(qid, 101, 2)
         self.assertEqual((await app.db_fetchone(
             "SELECT sent_at FROM queue WHERE id=?", (qid,)
         ))[0], self.sent.timestamp())
 
     async def test_queue_worker_keeps_failed_delivery_pending(self):
         self.fake_bot.send_message.side_effect = RuntimeError("Simulated failure")
-        with patch.object(app, "utcnow", return_value=self.sent), patch.object(
-            app.asyncio, "sleep", side_effect=asyncio.CancelledError
-        ):
-            with self.assertRaises(asyncio.CancelledError):
-                await app.queue_worker()
+        qid = (await app.db_fetchone("SELECT id FROM queue WHERE user_id=101 AND step=2"))[0]
+        with patch.object(app, "utcnow", return_value=self.sent):
+            await app.process_queue_item(qid, 101, 2)
         self.assertIsNone((await app.db_fetchone(
             "SELECT sent_at FROM queue WHERE user_id=101 AND step=2"
         ))[0])
@@ -406,6 +402,173 @@ class StatisticsTests(DatabaseTestCase):
         await app.status_cmd(message)
         self.assertIn(stats_text, message.answer.await_args.args[0])
         telegram_text(message.answer.await_args.args[0])
+
+
+class QueueRecoveryTests(DatabaseTestCase):
+    async def make_all_overdue(self, user_id=101):
+        await app.db_exec("UPDATE queue SET run_at=? WHERE user_id=?", (self.sent.timestamp() - 100, user_id))
+
+    async def run_item(self, user_id=101, now=None):
+        with patch.object(app, "utcnow", return_value=now or self.sent):
+            rows = await app.get_due_queue_items()
+            item = next(row for row in rows if row[1] == user_id)
+            await app.process_queue_item(*item)
+
+    async def test_long_outage_sends_one_step_then_preserves_relative_intervals(self):
+        await self.make_all_overdue()
+        with patch.object(app, "utcnow", return_value=self.sent):
+            self.assertEqual([r[2] for r in await app.get_due_queue_items()], [2])
+            await self.run_item()
+            self.assertEqual(await app.get_due_queue_items(), [])
+        self.fake_bot.send_message.assert_awaited_once()
+        future = await app.db_fetchall("SELECT step, run_at FROM queue WHERE user_id=101 AND sent_at IS NULL ORDER BY step")
+        self.assertEqual([row[1] for row in future], [self.sent.timestamp() + (24 + 48 * i) * 3600 for i in range(8)])
+        app._conn.close()
+        await app.db_init()
+        with patch.object(app, "utcnow", return_value=self.sent + timedelta(hours=23, minutes=59)):
+            self.assertEqual(await app.get_due_queue_items(), [])
+        later = self.sent + timedelta(hours=26)
+        await self.run_item(now=later)
+        next_at = (await app.db_fetchone("SELECT run_at FROM queue WHERE user_id=101 AND step=4"))[0]
+        self.assertEqual(next_at, later.timestamp() + 48 * 3600)
+
+    async def test_test_intervals_survive_switching_mode_and_restart(self):
+        admin = app.ADMIN_IDS[0]
+        with patch.object(app, "TEST_MODE", True), patch.object(app, "utcnow", return_value=self.sent - timedelta(days=1)):
+            await app.enqueue_user(admin, "admin")
+        await self.run_item(admin)
+        dates = await app.db_fetchall("SELECT run_at FROM queue WHERE user_id=? AND sent_at IS NULL ORDER BY step", (admin,))
+        self.assertEqual([r[0] for r in dates], [self.sent.timestamp() + 10 * i for i in range(1, 9)])
+        app._conn.close()
+        await app.db_init()
+        self.assertEqual(await app.db_fetchall("SELECT run_at FROM queue WHERE user_id=? AND sent_at IS NULL ORDER BY step", (admin,)), dates)
+
+    async def test_blocked_user_is_cancelled_without_deleting_data_or_stopping_other_user(self):
+        from aiogram.methods import SendMessage
+        await self.make_all_overdue()
+        self.fake_bot.send_media_group.side_effect = app.TelegramForbiddenError(method=SendMessage(chat_id=101, text="test"), message="bot was blocked")
+        await self.run_item()
+        self.assertEqual((await app.db_fetchone("SELECT COUNT(*) FROM queue WHERE user_id=101 AND cancelled_at IS NOT NULL"))[0], 9)
+        self.assertEqual((await app.db_fetchone("SELECT COUNT(*) FROM queue WHERE user_id=101 AND sent_at IS NOT NULL"))[0], 0)
+        self.assertTrue(await app.already_started(101))
+        self.fake_bot.send_media_group.side_effect = None
+        with patch.object(app, "utcnow", return_value=self.sent - timedelta(hours=1)):
+            await app.enqueue_user(202, "healthy")
+        await self.run_item(202)
+        app._conn.close()
+        await app.db_init()
+        with patch.object(app, "utcnow", return_value=self.sent + timedelta(days=30)):
+            self.assertNotIn(101, [row[1] for row in await app.get_due_queue_items()])
+        self.assertIsNone((await app.db_fetchone("SELECT discount_until FROM users WHERE user_id=101"))[0])
+
+    async def test_temporary_failure_retries_head_only_and_retry_survives_restart(self):
+        await self.make_all_overdue()
+        self.fake_bot.send_message.side_effect = RuntimeError("network unavailable")
+        await self.run_item()
+        app._conn.close()
+        await app.db_init()
+        with patch.object(app, "utcnow", return_value=self.sent + timedelta(seconds=29.999)):
+            self.assertEqual(await app.get_due_queue_items(), [])
+        self.fake_bot.send_message.side_effect = None
+        await self.run_item(now=self.sent + timedelta(seconds=30))
+        sent_steps = await app.db_fetchall("SELECT step FROM queue WHERE user_id=101 AND sent_at IS NOT NULL")
+        self.assertEqual(sent_steps, [(2,)])
+        self.assertEqual((await app.db_fetchone("SELECT discount_until FROM users WHERE user_id=101"))[0], self.sent.timestamp() + 30 + 3600)
+
+    async def test_telegram_retry_after_is_respected_without_skipping_head(self):
+        from aiogram.methods import SendMessage
+        await self.make_all_overdue()
+        self.fake_bot.send_message.side_effect = app.TelegramRetryAfter(method=SendMessage(chat_id=101, text="test"), message="rate limit", retry_after=90)
+        await self.run_item()
+        with patch.object(app, "utcnow", return_value=self.sent + timedelta(seconds=89)):
+            self.assertEqual(await app.get_due_queue_items(), [])
+        with patch.object(app, "utcnow", return_value=self.sent + timedelta(seconds=90)):
+            self.assertEqual([r[2] for r in await app.get_due_queue_items()], [2])
+
+    async def test_bad_request_cancels_only_invalid_step_and_spaces_following_steps(self):
+        from aiogram.methods import SendMessage
+        await self.make_all_overdue()
+        self.fake_bot.send_message.side_effect = app.TelegramBadRequest(method=SendMessage(chat_id=101, text="test"), message="invalid media")
+        await self.run_item()
+        rows = await app.db_fetchall("SELECT step FROM queue WHERE user_id=101 AND cancelled_at IS NOT NULL")
+        self.assertEqual(rows, [(2,)])
+        next_at = (await app.db_fetchone("SELECT run_at FROM queue WHERE user_id=101 AND step=3"))[0]
+        self.assertEqual(next_at, self.sent.timestamp() + 24 * 3600)
+        self.assertIsNone((await app.db_fetchone("SELECT discount_until FROM users WHERE user_id=101"))[0])
+
+    async def test_hung_request_times_out_and_is_deferred(self):
+        async def hang(**kwargs):
+            await asyncio.Event().wait()
+        self.fake_bot.send_media_group.side_effect = hang
+        with patch.object(app, "QUEUE_SEND_TIMEOUT", 0.02):
+            await self.run_item()
+        self.assertEqual((await app.db_fetchone("SELECT retry_at FROM queue WHERE user_id=101 AND step=2"))[0], self.sent.timestamp() + 30)
+        self.assertIsNone((await app.db_fetchone("SELECT sent_at FROM queue WHERE user_id=101 AND step=2"))[0])
+
+    async def test_worker_delivers_to_healthy_user_while_other_request_is_hung(self):
+        with patch.object(app, "utcnow", return_value=self.sent - timedelta(hours=1)):
+            await app.enqueue_user(202, "healthy")
+        slow_started, healthy_received, slow_cancelled = asyncio.Event(), asyncio.Event(), asyncio.Event()
+        async def media(**kwargs):
+            if kwargs['chat_id'] == 101:
+                slow_started.set()
+                try:
+                    await asyncio.Event().wait()
+                finally:
+                    slow_cancelled.set()
+        async def text(**kwargs):
+            if kwargs['chat_id'] == 202:
+                healthy_received.set()
+        self.fake_bot.send_media_group.side_effect = media
+        self.fake_bot.send_message.side_effect = text
+        with patch.object(app, "utcnow", return_value=self.sent), patch.object(app, "QUEUE_SEND_TIMEOUT", 10):
+            worker = asyncio.create_task(app.queue_worker())
+            try:
+                await asyncio.wait_for(healthy_received.wait(), timeout=1)
+                self.assertTrue(slow_started.is_set())
+                self.assertIsNone((await app.db_fetchone("SELECT sent_at FROM queue WHERE user_id=101 AND step=2"))[0])
+                self.assertIsNotNone((await app.db_fetchone("SELECT sent_at FROM queue WHERE user_id=202 AND step=2"))[0])
+            finally:
+                worker.cancel()
+                await asyncio.gather(worker, return_exceptions=True)
+        self.assertTrue(slow_cancelled.is_set())
+
+    async def test_old_inflight_delivery_does_not_complete_new_queue_after_user_reset(self):
+        old_id = (await app.db_fetchone("SELECT id FROM queue WHERE user_id=101 AND step=2"))[0]
+        async def reset_during_delivery(**kwargs):
+            await app.reset_user_db(101)
+            await app.enqueue_user(101, "restarted")
+        self.fake_bot.send_message.side_effect = reset_during_delivery
+        with patch.object(app, "utcnow", return_value=self.sent):
+            await app.process_queue_item(old_id, 101, 2)
+        self.assertIsNone((await app.db_fetchone("SELECT sent_at FROM queue WHERE user_id=101 AND step=2"))[0])
+        self.assertIsNone((await app.db_fetchone("SELECT discount_until FROM users WHERE user_id=101"))[0])
+
+    async def test_old_inflight_error_does_not_cancel_new_queue_after_reset(self):
+        from aiogram.methods import SendMessage
+        old_id = (await app.db_fetchone("SELECT id FROM queue WHERE user_id=101 AND step=2"))[0]
+        async def reset_then_fail(**kwargs):
+            await app.reset_user_db(101)
+            await app.enqueue_user(101, "restarted")
+            raise app.TelegramBadRequest(method=SendMessage(chat_id=101, text="test"), message="old message invalid")
+        self.fake_bot.send_message.side_effect = reset_then_fail
+        with patch.object(app, "utcnow", return_value=self.sent):
+            await app.process_queue_item(old_id, 101, 2)
+        self.assertEqual((await app.db_fetchone("SELECT COUNT(*) FROM queue WHERE user_id=101 AND cancelled_at IS NOT NULL"))[0], 0)
+        self.assertIsNone((await app.db_fetchone("SELECT discount_until FROM users WHERE user_id=101"))[0])
+
+    async def test_legacy_schema_migration_preserves_rows_and_recovers_intervals(self):
+        app._conn.close()
+        legacy_path = str(Path(self.tmp.name) / 'legacy.sqlite3')
+        with sqlite3.connect(legacy_path) as legacy:
+            legacy.execute('CREATE TABLE users(user_id INTEGER PRIMARY KEY, username TEXT, started_at INTEGER, paid INTEGER DEFAULT 0, discount_until INTEGER, awaiting_receipt INTEGER DEFAULT 0)')
+            legacy.execute('CREATE TABLE queue(id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, step INTEGER, run_at INTEGER, sent_at INTEGER, UNIQUE(user_id,step))')
+            legacy.execute('INSERT INTO users(user_id, started_at) VALUES(999, 0)')
+            legacy.executemany('INSERT INTO queue(user_id,step,run_at) VALUES(999,?,?)', [(2,2400),(3,88800),(4,261600)])
+        app.DB_PATH = legacy_path
+        await app.db_init()
+        self.assertEqual(await app.db_fetchall('SELECT step,run_at,interval_seconds,sent_at,cancelled_at,retry_at FROM queue ORDER BY step'),
+                         [(2,2400,2400,None,None,None),(3,88800,86400,None,None,None),(4,261600,172800,None,None,None)])
 
 
 if __name__ == "__main__":

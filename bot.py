@@ -2,7 +2,6 @@ import os
 import asyncio
 import logging
 import sqlite3
-import traceback
 from datetime import datetime, timedelta, timezone
 from typing import Optional, List, Tuple
 
@@ -16,7 +15,7 @@ from aiogram.types import (
 from aiogram.filters import CommandStart
 from aiogram.client.default import DefaultBotProperties
 from aiogram.types import InputMediaPhoto
-from aiogram.exceptions import TelegramForbiddenError, TelegramBadRequest
+from aiogram.exceptions import TelegramForbiddenError, TelegramBadRequest, TelegramRetryAfter
 
 # ================= НАСТРОЙКИ =================
 
@@ -37,6 +36,9 @@ TEST_DISCOUNT_SECONDS = 60
 DISCOUNT_PRICE = (2333, 3888)
 FULL_PRICE = (3333, 5555)
 DISCOUNT_SECONDS = 60 * 60
+QUEUE_CONCURRENCY = 5
+QUEUE_SEND_TIMEOUT = 30
+QUEUE_RETRY_SECONDS = 30
 
 STEP2_PHOTOS = [
     "AgACAgIAAxkBAAOdaaAKHS1q1EwOTzO1p3op9dHuw2UAAg0TaxtizAABSYD8AxiJxqOYAQADAgADeQADOgQ",
@@ -206,6 +208,24 @@ async def db_init():
     await _ensure_column("users", "awaiting_receipt", "INTEGER DEFAULT 0")
     await _ensure_column("users", "paid", "INTEGER DEFAULT 0")
 
+    await _ensure_column("queue", "interval_seconds", "INTEGER")
+    await _ensure_column("queue", "retry_at", "REAL")
+    await _ensure_column("queue", "cancelled_at", "REAL")
+    # Recover intervals from the original schedule once, before any rescheduling.
+    _conn.execute("""
+        UPDATE queue SET interval_seconds=CASE
+            WHEN step=2 THEN 2400
+            ELSE COALESCE(
+                (SELECT queue.run_at - previous.run_at FROM queue AS previous
+                 WHERE previous.user_id=queue.user_id AND previous.step=queue.step-1),
+                CASE WHEN step=3 THEN 86400 ELSE 172800 END
+            ) END
+        WHERE interval_seconds IS NULL AND step BETWEEN 2 AND 10
+    """)
+    _conn.execute("""
+        CREATE INDEX IF NOT EXISTS queue_pending_due ON queue(run_at, user_id, step)
+        WHERE sent_at IS NULL AND cancelled_at IS NULL
+    """)
     init_stats(_conn)
     init_settings(_conn, TEST_MODE)
     _conn.commit()
@@ -285,11 +305,13 @@ async def enqueue_user(user_id: int, username: Optional[str]):
         )
         await db_exec("DELETE FROM queue WHERE user_id=?", (user_id,))
 
+    previous_run_at = dt_to_ts(now)
     for step, run_at in schedule:
         await db_exec(
-            "INSERT OR IGNORE INTO queue(user_id, step, run_at, sent_at) VALUES(?,?,?,NULL)",
-            (user_id, step, run_at)
+            "INSERT OR IGNORE INTO queue(user_id, step, run_at, sent_at, interval_seconds) VALUES(?,?,?,NULL,?)",
+            (user_id, step, run_at, run_at - previous_run_at)
         )
+        previous_run_at = run_at
 
 async def reset_user_db(user_id: int):
     await db_exec("DELETE FROM queue WHERE user_id=?", (user_id,))
@@ -325,10 +347,10 @@ async def confirm_purchase(user_id: int):
 
 # ================= ОТПРАВКА ПО ШАГУ =================
 
-async def send_step(user_id: int, step: int):
+async def send_step(user_id: int, step: int, queue_id: Optional[int] = None):
     if await is_paid(user_id):
         logging.info(f"Skip paid user={user_id} step={step}")
-        return
+        return False
 
     logging.info(f"send_step user={user_id} step={step}")
 
@@ -340,19 +362,6 @@ async def send_step(user_id: int, step: int):
             text=text_2,
             reply_markup=kb_action("купить", "pay")
         )
-        # Start the real 60-minute window only after Telegram accepts the text.
-        # SQLite keeps fractional seconds even in an INTEGER-affinity column.
-        sent_at = utcnow().timestamp()
-        async with _db_lock:
-            with _conn:
-                _conn.execute(
-                    "UPDATE users SET discount_until=? WHERE user_id=?",
-                    (sent_at + discount_duration(user_id), user_id),
-                )
-                _conn.execute(
-                    "UPDATE queue SET sent_at=? WHERE user_id=? AND step=2",
-                    (sent_at, user_id),
-                )
     elif step == 3:
         await bot.send_message(user_id, text_3, reply_markup=kb_action("ХОЧУ", "pay"))
     elif step == 4:
@@ -371,55 +380,122 @@ async def send_step(user_id: int, step: int):
         await bot.send_message(user_id, text_10, reply_markup=kb_action("ЛЕТС ГОУ", "pay"))
     else:
         logging.warning(f"Unknown step={step} for user={user_id}")
+        return False
+
+    await record_step_delivery(user_id, step, utcnow().timestamp(), queue_id=queue_id)
+    return True
+
+
+def _reschedule_remaining(user_id: int, step: int, completed_at: float):
+    next_at = completed_at
+    rows = _conn.execute(
+        "SELECT id, interval_seconds FROM queue WHERE user_id=? AND step>? AND step<=10 "
+        "AND sent_at IS NULL AND cancelled_at IS NULL ORDER BY step", (user_id, step)
+    ).fetchall()
+    for qid, interval in rows:
+        next_at += interval
+        _conn.execute("UPDATE queue SET run_at=?, retry_at=NULL WHERE id=?", (next_at, qid))
+
+
+async def record_step_delivery(user_id: int, step: int, sent_at: float, queue_id: Optional[int] = None):
+    async with _db_lock:
+        with _conn:
+            updated = _conn.execute(
+                "UPDATE queue SET sent_at=?, retry_at=NULL WHERE user_id=? AND step=? "
+                "AND sent_at IS NULL AND cancelled_at IS NULL AND (? IS NULL OR id=?)", (sent_at, user_id, step, queue_id, queue_id)
+            )
+            if not updated.rowcount:
+                return
+            if step == 2:
+                _conn.execute("UPDATE users SET discount_until=? WHERE user_id=?",
+                              (sent_at + discount_duration(user_id), user_id))
+            _reschedule_remaining(user_id, step, sent_at)
+
+
+async def get_due_queue_items():
+    now = utcnow().timestamp()
+    return await db_fetchall(
+        "SELECT q.id, q.user_id, q.step FROM queue AS q JOIN users AS u ON u.user_id=q.user_id "
+        "WHERE q.sent_at IS NULL AND q.cancelled_at IS NULL AND u.paid=0 "
+        "AND q.step BETWEEN 2 AND 10 AND q.run_at<=? AND COALESCE(q.retry_at, 0)<=? "
+        "AND NOT EXISTS (SELECT 1 FROM queue AS earlier WHERE earlier.user_id=q.user_id "
+        "AND earlier.step BETWEEN 2 AND 10 AND earlier.step<q.step "
+        "AND earlier.sent_at IS NULL AND earlier.cancelled_at IS NULL) "
+        "ORDER BY q.run_at, q.id LIMIT 50", (now, now)
+    )
+
+
+async def cancel_queue_item(user_id: int, step: int, blocked: bool, queue_id: int):
+    now = utcnow().timestamp()
+    async with _db_lock:
+        with _conn:
+            pending = _conn.execute(
+                "SELECT 1 FROM queue WHERE id=? AND user_id=? AND step=? AND sent_at IS NULL AND cancelled_at IS NULL",
+                (queue_id, user_id, step),
+            ).fetchone()
+            if not pending:
+                return
+            if blocked:
+                _conn.execute("UPDATE queue SET cancelled_at=? WHERE user_id=? AND sent_at IS NULL AND cancelled_at IS NULL",
+                              (now, user_id))
+            else:
+                _conn.execute("UPDATE queue SET cancelled_at=? WHERE user_id=? AND step=? AND sent_at IS NULL",
+                              (now, user_id, step))
+                _reschedule_remaining(user_id, step, now)
+
+
+async def process_queue_item(qid: int, user_id: int, step: int):
+    try:
+        await asyncio.wait_for(send_step(user_id, step, queue_id=qid), timeout=QUEUE_SEND_TIMEOUT)
+    except TelegramForbiddenError:
+        logging.warning("Queue cancelled for blocked/inaccessible user=%s", user_id)
+        await cancel_queue_item(user_id, step, blocked=True, queue_id=qid)
+    except TelegramBadRequest:
+        logging.error("Invalid Telegram message user=%s step=%s; cancelling this step", user_id, step)
+        await cancel_queue_item(user_id, step, blocked=False, queue_id=qid)
+    except TelegramRetryAfter as error:
+        await db_exec("UPDATE queue SET retry_at=? WHERE id=? AND sent_at IS NULL AND cancelled_at IS NULL",
+                      (utcnow().timestamp() + max(1, error.retry_after), qid))
+        logging.warning("Telegram rate limit user=%s step=%s; retry in %ss", user_id, step, error.retry_after)
+    except Exception as error:
+        logging.warning("Temporary queue error user=%s step=%s type=%s; retry deferred", user_id, step, type(error).__name__)
+        await db_exec("UPDATE queue SET retry_at=? WHERE id=? AND sent_at IS NULL AND cancelled_at IS NULL",
+                      (utcnow().timestamp() + QUEUE_RETRY_SECONDS, qid))
 
 
 # ================= ВОРКЕР ОЧЕРЕДИ =================
 
 async def queue_worker():
     logging.info("Queue worker started")
-    while True:
-        try:
-            now_ts = dt_to_ts(utcnow())
-            rows = await db_fetchall(
-                "SELECT id, user_id, step FROM queue "
-                "WHERE sent_at IS NULL AND run_at <= ? "
-                "ORDER BY run_at ASC LIMIT 50",
-                (now_ts,)
-            )
-
-            logging.info(f"QUEUE CHECK now={now_ts} due_rows={len(rows)}")
-
-            if not rows:
-                await asyncio.sleep(1 if TEST_MODE else 3)
-                continue
-
-            for qid, user_id, step in rows:
-                logging.info(f"QUEUE SEND qid={qid} user={user_id} step={step}")
-
-                try:
-                    await send_step(user_id, step)
-                    await db_exec(
-                        "UPDATE queue SET sent_at=COALESCE(sent_at, ?) WHERE id=?",
-                        (dt_to_ts(utcnow()), qid),
-                    )
-
-                except TelegramForbiddenError as e:
-                    logging.error(f"Permanent TelegramForbiddenError user={user_id} step={step}: {e}")
-                    await db_exec("UPDATE queue SET sent_at=? WHERE id=?", (now_ts, qid))
-
-                except TelegramBadRequest as e:
-                    logging.error(f"Permanent TelegramBadRequest user={user_id} step={step}: {e}")
-                    await db_exec("UPDATE queue SET sent_at=? WHERE id=?", (now_ts, qid))
-
-                except Exception as e:
-                    logging.error(f"Temporary send error user={user_id} step={step}: {e}")
-                    logging.error(traceback.format_exc())
-
-        except Exception as e:
-            logging.error(f"Worker loop error: {e}")
-            logging.error(traceback.format_exc())
-
-        await asyncio.sleep(0.2)
+    active = {}
+    try:
+        while True:
+            try:
+                for user_id, task in list(active.items()):
+                    if task.done():
+                        del active[user_id]
+                        try:
+                            task.result()
+                        except Exception:
+                            logging.exception("Queue task failed user=%s", user_id)
+                if len(active) < QUEUE_CONCURRENCY:
+                    for qid, user_id, step in await get_due_queue_items():
+                        if user_id in active:
+                            continue
+                        active[user_id] = asyncio.create_task(process_queue_item(qid, user_id, step))
+                        if len(active) >= QUEUE_CONCURRENCY:
+                            break
+                if active:
+                    await asyncio.wait(active.values(), timeout=0.2, return_when=asyncio.FIRST_COMPLETED)
+                else:
+                    await asyncio.sleep(1 if TEST_MODE else 3)
+            except Exception:
+                logging.exception("Worker loop error")
+                await asyncio.sleep(3)
+    finally:
+        for task in active.values():
+            task.cancel()
+        await asyncio.gather(*active.values(), return_exceptions=True)
 
 
 # ================= PAY FLOW =================
@@ -651,7 +727,7 @@ async def debug_queue_cmd(message: Message):
 
     rows = await db_fetchall(
         "SELECT user_id, step, run_at FROM queue "
-        "WHERE sent_at IS NULL AND run_at <= ? "
+        "WHERE sent_at IS NULL AND cancelled_at IS NULL AND run_at <= ? "
         "ORDER BY run_at ASC LIMIT 20",
         (dt_to_ts(utcnow()),)
     )
@@ -674,8 +750,13 @@ async def main():
     logging.info("Бот запущен 🚀")
     await db_init()
     logging.info("TEST_MODE=%s; accelerated timers apply to admins only (%ss)", TEST_MODE, TEST_DELAY_SECONDS)
-    asyncio.create_task(queue_worker())
-    await dp.start_polling(bot)
+    worker = asyncio.create_task(queue_worker())
+    try:
+        await dp.start_polling(bot, close_bot_session=False)
+    finally:
+        worker.cancel()
+        await asyncio.gather(worker, return_exceptions=True)
+        await bot.session.close()
 
 if __name__ == "__main__":
     asyncio.run(main())
