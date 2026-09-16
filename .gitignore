@@ -17,3 +17,9 @@ bot.sqlite3-wal
 # Env
 .env
 
+
+.venv/
+*.log
+.env.*
+!.env.example
+.ruff_cache/

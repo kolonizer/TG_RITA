@@ -22,7 +22,7 @@ if not TOKEN:
     raise RuntimeError("BOT_TOKEN is not set. Put it in .env or environment variables.")
 
 ADMIN_IDS = [313372023, 893519113]
-DB_PATH = "bot.sqlite3"
+DB_PATH = os.getenv("DB_PATH", "bot.sqlite3")
 
 VIDEO_ENABLED = True
 VIDEO_FILE_ID = "BAACAgIAAxkBAAIBnWmlig1rlhpT9x6c0xGlwdKasMIyAAIxkwACb24RSVk0ks25wXd2OgQ"
@@ -30,8 +30,9 @@ VIDEO_FILE_ID = "BAACAgIAAxkBAAIBnWmlig1rlhpT9x6c0xGlwdKasMIyAAIxkwACb24RSVk0ks2
 TEST_MODE = False
 TEST_DELAY_SECONDS = 10
 
-DISCOUNT_PRICE = 2030
-FULL_PRICE = 2900
+DISCOUNT_PRICE = (2333, 3888)
+FULL_PRICE = (3333, 5555)
+DISCOUNT_SECONDS = 60 * 60
 
 STEP2_PHOTOS = [
     "AgACAgIAAxkBAAOdaaAKHS1q1EwOTzO1p3op9dHuw2UAAg0TaxtizAABSYD8AxiJxqOYAQADAgADeQADOgQ",
@@ -103,7 +104,21 @@ dp = Dispatcher()
 
 text_1 = "Привет! На связи риталпиаш💛\n\nОтправляю тебе <b>видео-урок «Как найти своё предназначение?»</b>, хорошего просмотра! <i> \n\nP.s. Эти 30 минут могут изменить твою жизнь</i>👀"
 
-text_2 = "Ну как ты после просмотра?\n\nЕсли понимаешь, что тема тебе близка и хочется глубже в неё погрузиться, вместе поработать над пониманием себя: своих желаний, эмоций, потребностей, мечт и целей, приглашаю тебя присоединиться к <b>полному курсу</b> «Как найти своё предназначение?»❤️‍🩹\n\n📌Длительность курса - <b>25 дней</b>, каждый из которых будет посвящен определенной теме <i>(наполнение курса ты можешь подробно прочитать на фото). </i><b>90% курса - практика</b>, и только минимум теории. Я специально подобрала различные техники, упражнения, медитации, практики и задания, с помощью которых ты сможешь <i>не просто понять</i> что-то на уровне мыслей и чувств, но и <i>закрепить все инсайты действиями</i>, ведь только наши поступки способны действительно изменить жизнь.\n\nКурс стартует 30 марта, успевайте занять место! <i>(Да, их количество ограничено, так как я самостоятельно буду со всеми общаться и отвечать каждому)</i>\n\nСпециально для вас я даю <b>скидку 30% ровно на час</b> после отправки этого сообщения! В течение этого часа вы можете приобрести курс за <b>2030</b> рублей вместо 2900🤯 <i>(Больше такой скидки не будет! А ограничение час - чтобы вы не тянули</i>😋<i>) </i>"
+text_2 = """Ну как ты после просмотра?
+
+Если понимаешь, что тема тебе близка и хочется глубже в неё погрузиться, вместе поработать над пониманием себя: своих желаний, эмоций, потребностей, мечт и целей, приглашаю тебя присоединиться к <b>полному курсу</b> «Как найти своё предназначение?» 💝
+
+📌 Длительность курса — <b>24 дня</b>, каждый из которых будет посвящён определенной теме <i>(наполнение курса ты можешь подробно прочитать на фото)</i>. <b>90% курса — практика</b>, и только минимум теории. Я специально подобрала различные техники, упражнения, медитации, практики и задания, с помощью которых ты сможешь <i>не просто понять</i> что-то на уровне мыслей и чувств, но и <i>закрепить все инсайты действиями</i>, ведь только наши поступки способны действительно изменить жизнь.
+
+Курс стартует 30 сентября, успевайте занять место!
+
+Специально для вас я даю <b>скидку 30% ровно на час</b> после отправки этого сообщения!
+
+Предлагаю тебе на выбор 2 тарифа:
+1️⃣ С обратной связью от меня — <b>3 888 ₽</b> вместо 5 555 ₽
+2️⃣ Без обратной связи — <b>2 333 ₽</b> вместо 3 333 ₽
+
+<i>(Больше такой скидки не будет! А ограничение час — чтобы вы не тянули😊)</i>"""
 
 text_3 = "У вас бывало такое, что вроде <b>головой всё понимаешь</b>, но всё равно остается вопрос «<b>А делать-то что?</b>»\n\nТакое часто бывает при прослушивании всяких подкастов, лекций, интервью и тд. Люди делятся важными мыслями и знаниями, но без практики в вашей жизни ничего не изменится от этих ✨<b>инсайтов</b>✨\n\nИменно поэтому 90% моего курса по предназначению состоит из <b>практики</b>. Я не просто расскажу вам, как найти своё предназначение. Я помогу вам сделать это. Это не лекции, это <b>ежедневные задания</b> и практики, с помощью которых ты наконец сможешь понять, что тебе делать. <i>Тебе необязательно знать теорию, важнее - добиться желаемых изменений</i>😼\n\nКурс полностью сделан <b>вручную</b> мной, на основе моих знаний по психологии и жизненного опыта. Я добавила только те практики, которые <b>помогли мне самой</b>. Ни на одном этапе я не использовала ИИ (чатик джипити вы и сами можете открыть бесплатно). Мне было важно вложить свою энергию в этот продукт.\n\nОн точно вам поможет, ведь курс «Как найти своё предназначение?» - буквально <b>реализация моего предназначения</b>. <i>Для меня это очень символично</i>🥹"
 
@@ -135,7 +150,7 @@ def kb_details_and_go(details_label: str, go_label: str) -> InlineKeyboardMarkup
         [InlineKeyboardButton(text=go_label, callback_data="pay")]
     ])
 
-def kb_pay_with_receipt(price: int) -> InlineKeyboardMarkup:
+def kb_pay_with_receipt(price: Tuple[int, int]) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="ОТПРАВИТЬ ЧЕК", callback_data="send_receipt")]
     ])
@@ -195,7 +210,11 @@ async def db_init():
 
     _conn.commit()
 
-    await db_exec("DELETE FROM queue WHERE step=99")
+    # Older versions precomputed a deadline at /start, before delivery.
+    await db_exec(
+        "UPDATE users SET discount_until=NULL WHERE user_id IN "
+        "(SELECT user_id FROM queue WHERE step=2 AND sent_at IS NULL)"
+    )
 
 async def _ensure_column(table: str, col: str, coltype: str):
     async with _db_lock:
@@ -223,25 +242,24 @@ async def db_fetchall(sql: str, params=()):
 
 # ================= ПЛАН ВОРОНКИ =================
 
-def build_schedule(start_dt: datetime) -> List[Tuple[int, int, int]]:
+def build_schedule(start_dt: datetime) -> List[Tuple[int, int]]:
     t0 = start_dt
 
     t2 = t0 + timedelta(seconds=delay(minutes=40))
-    discount_until = t2 + timedelta(seconds=delay(hours=1))
 
     schedule = []
-    schedule.append((2, dt_to_ts(t2), dt_to_ts(discount_until)))
+    schedule.append((2, dt_to_ts(t2)))
 
     t3 = t2 + timedelta(seconds=delay(hours=24))
-    schedule.append((3, dt_to_ts(t3), dt_to_ts(discount_until)))
+    schedule.append((3, dt_to_ts(t3)))
 
     t4 = t3 + timedelta(seconds=delay(hours=48))
-    schedule.append((4, dt_to_ts(t4), dt_to_ts(discount_until)))
+    schedule.append((4, dt_to_ts(t4)))
 
     cur = t4
     for step in range(5, 11):
         cur = cur + timedelta(seconds=delay(hours=48))
-        schedule.append((step, dt_to_ts(cur), dt_to_ts(discount_until)))
+        schedule.append((step, dt_to_ts(cur)))
 
     return schedule
 
@@ -251,23 +269,22 @@ async def enqueue_user(user_id: int, username: Optional[str]):
 
     existing = await db_fetchone("SELECT user_id FROM users WHERE user_id=?", (user_id,))
     schedule = build_schedule(now)
-    _, _, discount_until_ts = schedule[0]
 
     if existing is None:
         await db_exec(
             "INSERT INTO users(user_id, username, started_at, paid, discount_until, awaiting_receipt) "
             "VALUES(?,?,?,0,?,0)",
-            (user_id, username, now_ts, discount_until_ts)
+            (user_id, username, now_ts, None)
         )
     else:
         await db_exec(
             "UPDATE users SET username=?, started_at=?, paid=0, discount_until=?, awaiting_receipt=0 "
             "WHERE user_id=?",
-            (username, now_ts, discount_until_ts, user_id)
+            (username, now_ts, None, user_id)
         )
         await db_exec("DELETE FROM queue WHERE user_id=?", (user_id,))
 
-    for step, run_at, _ in schedule:
+    for step, run_at in schedule:
         await db_exec(
             "INSERT OR IGNORE INTO queue(user_id, step, run_at, sent_at) VALUES(?,?,?,NULL)",
             (user_id, step, run_at)
@@ -285,13 +302,12 @@ async def already_started(user_id: int) -> bool:
     row = await db_fetchone("SELECT user_id FROM users WHERE user_id=?", (user_id,))
     return row is not None
 
-async def get_current_price(user_id: int) -> int:
+async def get_current_price(user_id: int) -> Tuple[int, int]:
     row = await db_fetchone("SELECT discount_until FROM users WHERE user_id=?", (user_id,))
     if not row or not row[0]:
         return FULL_PRICE
-    discount_until = int(row[0])
-    now_ts = dt_to_ts(utcnow())
-    return DISCOUNT_PRICE if now_ts <= discount_until else FULL_PRICE
+    discount_until = float(row[0])
+    return DISCOUNT_PRICE if utcnow().timestamp() < discount_until else FULL_PRICE
 
 async def set_awaiting_receipt(user_id: int, value: int):
     await db_exec("UPDATE users SET awaiting_receipt=? WHERE user_id=?", (value, user_id))
@@ -323,6 +339,19 @@ async def send_step(user_id: int, step: int):
             text=text_2,
             reply_markup=kb_action("купить", "pay")
         )
+        # Start the real 60-minute window only after Telegram accepts the text.
+        # SQLite keeps fractional seconds even in an INTEGER-affinity column.
+        sent_at = utcnow().timestamp()
+        async with _db_lock:
+            with _conn:
+                _conn.execute(
+                    "UPDATE users SET discount_until=? WHERE user_id=?",
+                    (sent_at + DISCOUNT_SECONDS, user_id),
+                )
+                _conn.execute(
+                    "UPDATE queue SET sent_at=? WHERE user_id=? AND step=2",
+                    (sent_at, user_id),
+                )
     elif step == 3:
         await bot.send_message(user_id, text_3, reply_markup=kb_action("ХОЧУ", "pay"))
     elif step == 4:
@@ -366,21 +395,24 @@ async def queue_worker():
             for qid, user_id, step in rows:
                 logging.info(f"QUEUE SEND qid={qid} user={user_id} step={step}")
 
-                await db_exec("UPDATE queue SET sent_at=? WHERE id=?", (now_ts, qid))
-
                 try:
                     await send_step(user_id, step)
+                    await db_exec(
+                        "UPDATE queue SET sent_at=COALESCE(sent_at, ?) WHERE id=?",
+                        (dt_to_ts(utcnow()), qid),
+                    )
 
                 except TelegramForbiddenError as e:
                     logging.error(f"Permanent TelegramForbiddenError user={user_id} step={step}: {e}")
+                    await db_exec("UPDATE queue SET sent_at=? WHERE id=?", (now_ts, qid))
 
                 except TelegramBadRequest as e:
                     logging.error(f"Permanent TelegramBadRequest user={user_id} step={step}: {e}")
+                    await db_exec("UPDATE queue SET sent_at=? WHERE id=?", (now_ts, qid))
 
                 except Exception as e:
                     logging.error(f"Temporary send error user={user_id} step={step}: {e}")
                     logging.error(traceback.format_exc())
-                    await db_exec("UPDATE queue SET sent_at=NULL WHERE id=?", (qid,))
 
         except Exception as e:
             logging.error(f"Worker loop error: {e}")
@@ -391,17 +423,20 @@ async def queue_worker():
 
 # ================= PAY FLOW =================
 
-def payment_message(price: int) -> str:
-    if price == DISCOUNT_PRICE:
-        price_text = f"<s>{FULL_PRICE} рублей</s> <b>{DISCOUNT_PRICE} рублей</b>"
-    else:
-        price_text = f"<b>{FULL_PRICE} рублей</b>"
+def format_price(price: int) -> str:
+    return f"{price:,}".replace(",", " ")
 
+
+def payment_message(price: Tuple[int, int]) -> str:
+    without_feedback, with_feedback = price
     return (
-        "Благодарю за доверие! Давай руку и пойдём вместе искать твоё предназначение 🫱🏻🫲🏻\n\n"
-        f"Для оплаты места на курсе переведи {price_text} по реквизитам:\n\n"
-        "<b>Номер телефона:</b> 89139034994\n"
-        "<b>ИЛИ номер карты:</b> 2200011679704925\n"
+        "Благодарю за доверие! Давай руку и пойдём вместе искать твоё предназначение 🫴🏻🫴🏻\n\n"
+        "Для оплаты места на курсе выбери подходящий для тебя тариф:\n"
+        f"1️⃣ {format_price(without_feedback)} ₽ — без обратной связи от меня\n"
+        f"2️⃣ {format_price(with_feedback)} ₽ — с обратной связью от меня\n\n"
+        "Просто переведи соответствующую сумму ПО РЕКВИЗИТАМ 👇🏻\n\n"
+        "<b>Номер телефона:</b> 89938132956\n"
+        "<b>ИЛИ номер карты:</b> 2200010179100253\n"
         "Газпромбанк\n"
         "Получатель: Лобанова Маргарита Сергеевна\n\n"
         "После оплаты пришли чек сюда, я проверю его и добавлю тебя в чат курса✨"
@@ -490,7 +525,7 @@ async def receipt_photo(message: Message):
         f"User: <b>{message.from_user.full_name}</b>\n"
         f"Username: @{message.from_user.username}\n"
         f"User ID: <code>{user_id}</code>\n"
-        f"Сумма: <b>{price}₽</b>\n"
+        f"Тарифы на момент получения чека: <b>{format_price(price[0])} ₽ / {format_price(price[1])} ₽</b>\n"
         f"Время (UTC): {utcnow().strftime('%Y-%m-%d %H:%M:%S')}"
     )
 
@@ -517,7 +552,7 @@ async def receipt_document(message: Message):
         f"User: <b>{message.from_user.full_name}</b>\n"
         f"Username: @{message.from_user.username}\n"
         f"User ID: <code>{user_id}</code>\n"
-        f"Сумма: <b>{price}₽</b>\n"
+        f"Тарифы на момент получения чека: <b>{format_price(price[0])} ₽ / {format_price(price[1])} ₽</b>\n"
         f"Время (UTC): {utcnow().strftime('%Y-%m-%d %H:%M:%S')}"
     )
 

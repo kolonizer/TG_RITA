@@ -1,0 +1,27 @@
+[Unit]
+Description=Rita Telegram course bot
+Wants=network-online.target
+After=network-online.target
+StartLimitIntervalSec=300
+StartLimitBurst=10
+
+[Service]
+Type=simple
+User=rita-bot
+Group=rita-bot
+WorkingDirectory=/var/lib/rita-bot
+EnvironmentFile=/etc/rita-bot/.env
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/opt/rita-bot/current/.venv/bin/python /opt/rita-bot/current/bot.py
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/rita-bot
+
+[Install]
+WantedBy=multi-user.target
