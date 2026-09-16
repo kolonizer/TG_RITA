@@ -566,6 +566,26 @@ async def receipt_document(message: Message):
     await confirm_purchase(user_id)
     await message.answer("Спасибо! ✅ Чек получен. Я скоро подтвержу оплату 💛")
 
+@dp.message(F.text == "/help")
+async def help_cmd(message: Message):
+    if message.from_user.id not in ADMIN_IDS:
+        return
+    await message.answer(
+        "<b>Доступные команды</b>\n\n"
+        "/help - этот список команд\n"
+        "/start - получить видео и начать прохождение\n"
+        "/reset - сбросить только своё прохождение\n"
+        "/status - режим, остаток скидки и статистика\n"
+        "/stats - статистика за текущий период\n"
+        "/reset_stats - начать новый период статистики без удаления пользователей и таймеров\n"
+        "/test_on - тестовый режим: сообщения по 10 секунд, скидка 60 секунд для администраторов\n"
+        "/test_off - обычный режим: первое сообщение через 40 минут, далее 24/48 часов, скидка 60 минут\n"
+        "/debug_queue - посмотреть просроченные задания очереди\n\n"
+        "После смены режима сохранённые таймеры остаются прежними. "
+        "Чтобы пройти заново с новыми таймерами: /reset, затем /start."
+    )
+
+
 @dp.message(F.text.in_({"/test_on", "/test_off"}))
 async def test_mode_cmd(message: Message):
     global TEST_MODE

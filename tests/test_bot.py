@@ -317,6 +317,24 @@ class TestModeTests(DiscountTests):
         self.assertEqual(app.discount_duration(101), 3600)
 
 
+class HelpTests(unittest.IsolatedAsyncioTestCase):
+    async def test_admin_gets_full_command_list(self):
+        for admin in app.ADMIN_IDS:
+            message = SimpleNamespace(from_user=SimpleNamespace(id=admin), answer=AsyncMock())
+            await app.help_cmd(message)
+            message.answer.assert_awaited_once()
+            text = telegram_text(message.answer.await_args.args[0])
+            for command in ["/help", "/start", "/reset", "/status", "/stats", "/reset_stats", "/test_on", "/test_off", "/debug_queue"]:
+                self.assertTrue(any(line.startswith(command + " - ") for line in text.splitlines()))
+            self.assertIn("скидка 60 секунд", text)
+            self.assertIn("скидка 60 минут", text)
+
+    async def test_non_admin_gets_no_help(self):
+        message = SimpleNamespace(from_user=SimpleNamespace(id=101), answer=AsyncMock())
+        await app.help_cmd(message)
+        message.answer.assert_not_awaited()
+
+
 class ModeCommandTests(DatabaseTestCase):
     async def test_admin_can_switch_both_modes_and_restart_keeps_choice(self):
         admin = app.ADMIN_IDS[0]
