@@ -33,10 +33,17 @@ PAYMENT_TEMPLATE = """Благодарю за доверие! Давай рук�
 После оплаты пришли чек сюда, я проверю его и добавлю тебя в чат курса✨"""
 
 
+def temporary_connection_error():
+    from aiogram.methods import SendMessage
+    error = app.TelegramNetworkError(method=SendMessage(chat_id=101, text="test"), message="connection unavailable")
+    error.__cause__ = app.ClientConnectorError(None, OSError("offline"))
+    return error
+
+
 def telegram_text(text):
     root = ElementTree.fromstring("<root>" + text + "</root>")
     for element in root.iter():
-        if element.tag not in {"root", "b", "i"}:
+        if element.tag not in {"root", "b", "i", "code"}:
             raise AssertionError(f"Unexpected HTML tag: {element.tag}")
     plain = "".join(root.itertext())
     if len(plain.encode("utf-16-le")) // 2 > 4096:
@@ -86,7 +93,7 @@ class DatabaseTestCase(unittest.IsolatedAsyncioTestCase):
         # Fractional seconds expose truncation errors at the hour boundary.
         self.sent = datetime(2026, 9, 16, 12, 0, 0, 750000, tzinfo=timezone.utc)
         self.fake_bot = SimpleNamespace(
-            send_media_group=AsyncMock(), send_message=AsyncMock()
+            id=123456789, send_media_group=AsyncMock(), send_message=AsyncMock()
         )
         self.bot_patch = patch.object(app, "bot", self.fake_bot)
         self.bot_patch.start()
@@ -126,7 +133,7 @@ class DiscountTests(DatabaseTestCase):
             with self.subTest(elapsed=elapsed):
                 callback = SimpleNamespace(
                     from_user=SimpleNamespace(id=101),
-                    message=SimpleNamespace(answer=AsyncMock()),
+                    message=SimpleNamespace(answer=AsyncMock(return_value=SimpleNamespace(message_id=500))),
                     answer=AsyncMock(),
                 )
                 with patch.object(app, "utcnow", return_value=self.sent + timedelta(seconds=elapsed)):
@@ -155,8 +162,8 @@ class DiscountTests(DatabaseTestCase):
     async def test_failed_text_or_photos_do_not_start_discount(self):
         for method in [self.fake_bot.send_media_group, self.fake_bot.send_message]:
             with self.subTest(method=method):
-                method.side_effect = RuntimeError("Simulated delivery failure")
-                with self.assertRaises(RuntimeError):
+                method.side_effect = temporary_connection_error()
+                with self.assertRaises(app.TelegramNetworkError):
                     await self.deliver()
                 self.assertIsNone((await app.db_fetchone(
                     "SELECT discount_until FROM users WHERE user_id=101"
@@ -221,7 +228,7 @@ class DiscountTests(DatabaseTestCase):
         await app.db_init()
         self.assertIsNone((await app.db_fetchone("SELECT discount_until FROM users WHERE user_id=101"))[0])
         columns = [row[1] for row in app._conn.execute("PRAGMA table_info(users)")]
-        self.assertEqual(columns, ["user_id", "username", "started_at", "paid", "discount_until", "awaiting_receipt", "receipt_received_at"])
+        self.assertEqual(columns, ["user_id", "username", "started_at", "paid", "discount_until", "awaiting_receipt", "receipt_received_at", "receipt_quote_id"])
         self.assertEqual((await app.db_fetchone("SELECT COUNT(*) FROM queue WHERE user_id=101"))[0], 10)
 
     async def test_paid_user_is_not_sent_offer(self):
@@ -287,7 +294,7 @@ class TestModeTests(DiscountTests):
                 self.assertEqual(await app.get_current_price(admin), expected)
                 callback = SimpleNamespace(
                     from_user=SimpleNamespace(id=admin),
-                    message=SimpleNamespace(answer=AsyncMock()), answer=AsyncMock(),
+                    message=SimpleNamespace(answer=AsyncMock(return_value=SimpleNamespace(message_id=500))), answer=AsyncMock(),
                 )
                 await app.pay_cb(callback)
                 callback.message.answer.assert_awaited_once_with(
@@ -461,7 +468,8 @@ class QueueRecoveryTests(DatabaseTestCase):
             "SELECT discount_until FROM users WHERE user_id=101"
         ))[0])
         with patch.object(app, "utcnow", return_value=self.sent):
-            self.assertEqual(await app.get_due_queue_items(), [(qid, 101, 2)])
+            self.assertEqual(await app.get_due_queue_items(), [])
+        self.assertIsNotNone((await app.db_fetchone("SELECT uncertain_at FROM queue WHERE id=?", (qid,)))[0])
 
     async def make_all_overdue(self, user_id=101):
         await app.db_exec("UPDATE queue SET run_at=? WHERE user_id=?", (self.sent.timestamp() - 100, user_id))
@@ -521,7 +529,7 @@ class QueueRecoveryTests(DatabaseTestCase):
 
     async def test_temporary_failure_retries_head_only_and_retry_survives_restart(self):
         await self.make_all_overdue()
-        self.fake_bot.send_message.side_effect = RuntimeError("network unavailable")
+        self.fake_bot.send_message.side_effect = temporary_connection_error()
         await self.run_item()
         app._conn.close()
         await app.db_init()
@@ -560,7 +568,8 @@ class QueueRecoveryTests(DatabaseTestCase):
         self.fake_bot.send_media_group.side_effect = hang
         with patch.object(app, "QUEUE_SEND_TIMEOUT", 0.02):
             await self.run_item()
-        self.assertEqual((await app.db_fetchone("SELECT retry_at FROM queue WHERE user_id=101 AND step=2"))[0], self.sent.timestamp() + 30)
+        self.assertIsNone((await app.db_fetchone("SELECT retry_at FROM queue WHERE user_id=101 AND step=2"))[0])
+        self.assertEqual((await app.db_fetchone("SELECT uncertain_at FROM queue WHERE user_id=101 AND step=2"))[0], self.sent.timestamp())
         self.assertIsNone((await app.db_fetchone("SELECT sent_at FROM queue WHERE user_id=101 AND step=2"))[0])
 
     async def test_worker_delivers_to_healthy_user_while_other_request_is_hung(self):
@@ -625,7 +634,7 @@ class QueueRecoveryTests(DatabaseTestCase):
             legacy.executemany('INSERT INTO queue(user_id,step,run_at) VALUES(999,?,?)', [(2,2400),(3,88800),(4,261600)])
         app.DB_PATH = legacy_path
         await app.db_init()
-        self.assertEqual(await app.db_fetchall('SELECT step,run_at,interval_seconds,sent_at,cancelled_at,retry_at FROM queue ORDER BY step'),
+        self.assertEqual(await app.db_fetchall('SELECT step,run_at,interval_seconds,sent_at,cancelled_at,retry_at FROM queue WHERE step<=4 ORDER BY step'),
                          [(2,2400,2400,None,None,None),(3,88800,86400,None,None,None),(4,261600,172800,None,None,None)])
 
 

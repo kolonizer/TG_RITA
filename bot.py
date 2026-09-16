@@ -2,20 +2,25 @@ import os
 import asyncio
 import logging
 import sqlite3
+import re
+from html import escape, unescape
+from weakref import WeakValueDictionary
 from datetime import datetime, timedelta, timezone
 from typing import Optional, List, Tuple
 
 from bot_stats import init_stats, get_stats, reset_stats, format_stats
 from bot_settings import init_settings, get_test_mode, set_test_mode
+import bot_receipts as receipts
 
 from aiogram import Bot, Dispatcher, F
 from aiogram.types import (
     Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
 )
-from aiogram.filters import CommandStart
+from aiogram.filters import CommandStart, Command
 from aiogram.client.default import DefaultBotProperties
 from aiogram.types import InputMediaPhoto
-from aiogram.exceptions import TelegramForbiddenError, TelegramBadRequest, TelegramRetryAfter
+from aiogram.exceptions import TelegramForbiddenError, TelegramBadRequest, TelegramRetryAfter, TelegramNetworkError
+from aiohttp import ClientConnectorError
 
 # ================= НАСТРОЙКИ =================
 
@@ -132,7 +137,7 @@ text_7 = "<b>Когда человек занимается тем, что ем�
 
 text_8 = "<b>КАК СПРАВИТЬСЯ СО СТРАХОМ?</b>\n\nВсе эмоции, которые мы испытываем, являются <b>полезными сигналами</b>. Природа создала их не для того, чтобы испортить нам жизнь. У каждой эмоции есть своя <b>функция</b>✨\n\nСтрах даёт нам <b>энергию для ухода от опасности.</b> Он заложен в нашей психике, чтобы увидев медведя в кустах, мы спрятались или убежали, тем самым спасли свою жизнь.\n\nНо сейчас в нашем мире такое количество стимулов, что мы можем начать бояться всего, без разбора, что представляет реальную опасность, а что нет. Так появляется тревожность - постоянный страх о чисто теоретическом будущем. Такая эмоция может привести к отказу от многих возможностей😔\n\n<i>Боюсь, что ничего не получится // что потеряю время → вообще не буду пробовать</i>\n\nСтрах – еще и самая опасная эмоция, которая оказывает <b>влияние на наше сознание и поведение.</b> Он может буквально блокировать нас и наше развитие. Вот что действительно страшно😡\n\nТак что же делать?\nПризнайте свой страх, заметьте его, дайте ему место. Вам можно бояться.\nТеперь страх не управляет вами. Как только вы осознаете его, у вас появляется прекрасная возможность – выбирать: «<i>Да, я боюсь, но не смотря на это я могу идти за своими желаниями</i>»\n\n<i>Я живу всю осознанную жизнь с девизом «Бойся, но делай».</i> И он помог мне добиться того, что я имею.\n\nЕсли чувствуешь, что готов(а) попробовать искать себя, несмотря на страх, жми на кнопочку ниже 👇🏻"
 
-text_9 = "<b>КАЖЕТСЯ, ЭТО НЕ МОЁ…</b>👀\n\nИ в этот момент весь фундамент, который ты так долго выстраивал, будто рушится под ногами. Как то, над чем я так старательно работала, может оказаться не моим?\n\nТы просто однажды просыпаешься с мыслью «<i>Я не хочу дальше жить ТАК.</i>». И что теперь делать с этой мыслью? Может забыть, отмахнуться, сделать вид, что не заметил её, и просто жить как раньше? Но как раньше уже не получится, ведь с каждым днём эта мысль будет всё громче кричать тебе «<i>пора что-то менять!</i>»😭\n\nИменно это я пережила, когда осознала, что место, в котором я проучилась 2 года (а до этого ещё потратила огромное количество усилий, чтобы поступить на бюджет) – не моё.\n\nКартина маслом: я сижу на паре и мысль, которую я неделями подавляла, не выдерживает и начинает неистово кричать в голове:\n• «Я не хочу здесь быть»\n• «Я не на своём месте»\n• «Я не должна быть тут»\n\nНа глазах наворачиваются слёзы, я убегаю в туалет и остаюсь наедине с желанием прямо сейчас забрать документы и не возвращаться никогда.\nЭто была моя последняя пара в НГУ.\n\nНо настоящий ад начался потом. Когда пришлось сказать маме, а потом и всем остальным. На протяжении года я ежедневно выслушивала от огромного количества людей осуждение и попытки переубедить. Мне даже говорили, что я не смогу построить с Колей семью из-за того, что у нас будут разные взгляды (ведь он закончил НГУ, а я нет)\n\nНо я не послушала никого, кроме себя, ведь с каждым днём убеждалась, что делаю всё правильно (хотя откаты тоже были). И теперь безумно благодарна себе, ведь всё сложилось наилучшим образом! А стоило лишь понять себя🤍\n\nЕсли тебе знакомы такие переживания, ещё <b>можно присоединиться</b> к моему проекту «Как найти своё предназначение?», пока осталось <b>несколько свободных мест!</b> Там я на протяжении <b>25 дней</b> буду помогать вам найти себя с помощью различных практик и знаний, которые в своё время помогли мне⬇️"
+text_9 = "<b>КАЖЕТСЯ, ЭТО НЕ МОЁ…</b>👀\n\nИ в этот момент весь фундамент, который ты так долго выстраивал, будто рушится под ногами. Как то, над чем я так старательно работала, может оказаться не моим?\n\nТы просто однажды просыпаешься с мыслью «<i>Я не хочу дальше жить ТАК.</i>». И что теперь делать с этой мыслью? Может забыть, отмахнуться, сделать вид, что не заметил её, и просто жить как раньше? Но как раньше уже не получится, ведь с каждым днём эта мысль будет всё громче кричать тебе «<i>пора что-то менять!</i>»😭\n\nИменно это я пережила, когда осознала, что место, в котором я проучилась 2 года (а до этого ещё потратила огромное количество усилий, чтобы поступить на бюджет) – не моё.\n\nКартина маслом: я сижу на паре и мысль, которую я неделями подавляла, не выдерживает и начинает неистово кричать в голове:\n• «Я не хочу здесь быть»\n• «Я не на своём месте»\n• «Я не должна быть тут»\n\nНа глазах наворачиваются слёзы, я убегаю в туалет и остаюсь наедине с желанием прямо сейчас забрать документы и не возвращаться никогда.\nЭто была моя последняя пара в НГУ.\n\nНо настоящий ад начался потом. Когда пришлось сказать маме, а потом и всем остальным. На протяжении года я ежедневно выслушивала от огромного количества людей осуждение и попытки переубедить. Мне даже говорили, что я не смогу построить с Колей семью из-за того, что у нас будут разные взгляды (ведь он закончил НГУ, а я нет)\n\nНо я не послушала никого, кроме себя, ведь с каждым днём убеждалась, что делаю всё правильно (хотя откаты тоже были). И теперь безумно благодарна себе, ведь всё сложилось наилучшим образом! А стоило лишь понять себя🤍\n\nЕсли тебе знакомы такие переживания, ещё <b>можно присоединиться</b> к моему проекту «Как найти своё предназначение?», пока осталось <b>несколько свободных мест!</b> Там я на протяжении <b>24 дня</b> буду помогать вам найти себя с помощью различных практик и знаний, которые в своё время помогли мне⬇️"
 
 text_10 = "<b>ЧТО ПОМОГЛО МНЕ НАЙТИ СЕБЯ?</b>\n\nВ какой-то момент я осознала, что постоянно мыслю категориями НАДО:\n«Надо выпить кофе»\n«Надо приготовить ужин»\n«Надо надеть эту кофточку, давно её не носила»\n\nА это только мелочи. Представляете, что было, когда дело касалось работы, учёбы и тд?🤦🏻‍♀️\n\nВместо того, чтобы задуматься, чего я хочу (банально съесть на завтрак кашу или яичницу), я только диктовала себе, что нужно делать.\n\nЭто осознание настолько поразило меня, что из глаз потекли слёзы…Как же я, будучи такой ✨осознанной, проработанной и вообще самой умной✨ настолько сильно разучилась чувствовать свои желания?\n\n<i>В этот момент Коля спросил у меня:</i>\n- А чего хочешь прямо сейчас?\n- Гулять, - ответила я.\n- Пойдём!🫶🏻\n\nВ этот момент я совсем разрыдалась от удивления, что можно вот так просто забить на то, что НАДО ложиться спать (был уже час ночи), и вообще он же не любит гулять в холодную погоду…Оказалось, можно просто заглянуть внутрь себя и позволить хотя бы на секунду задуматься, чего я сейчас хочу. И просто пойти гулять.\n\nЯ нашла для себя простое решение: <b>НАЧАТЬ ЧУВСТВОВАТЬ СВОИ «ХОЧУ»</b>🤍\n\nРегулярно на протяжении дня спрашивать у себя:\n«Чем я хочу позавтракать?»\n«Что я хочу надеть?»\n«Чем я хочу сейчас заняться?» и тд\n\nВажно было научиться ХОТЕТЬ что-то делать, так как дофамин вырабатывается при достижении цели, основанной на наших желаниях.\nВысокий дофамин = 📈 энергии и сил → успеваешь больше\n\nПоэтому важно создавать себе дофаминовые «хочу»\n\n<b>Дофаминовая цепочка</b> выглядит так: <b>хочу - делаю - получаю - радуюсь</b>\n\n<i>Так можно и счастливыми стать🥹</i>\nТы со мной?"
 
@@ -165,6 +170,19 @@ def kb_details_go_only() -> InlineKeyboardMarkup:
 
 _db_lock = asyncio.Lock()
 _conn: Optional[sqlite3.Connection] = None
+_user_locks = WeakValueDictionary()
+
+
+def user_lock(user_id):
+    lock = _user_locks.get(user_id)
+    if lock is None:
+        lock = asyncio.Lock()
+        _user_locks[user_id] = lock
+    return lock
+
+
+class DeliveryUncertain(RuntimeError):
+    """An interrupted Telegram request must not be replayed automatically."""
 
 def utcnow() -> datetime:
     return datetime.now(timezone.utc)
@@ -211,6 +229,10 @@ async def db_init():
     await _ensure_column("queue", "interval_seconds", "INTEGER")
     await _ensure_column("queue", "retry_at", "REAL")
     await _ensure_column("queue", "cancelled_at", "REAL")
+    await _ensure_column("queue", "media_sent_at", "REAL")
+    await _ensure_column("queue", "delivery_phase", "TEXT")
+    await _ensure_column("queue", "uncertain_at", "REAL")
+    await _ensure_column("queue", "message_id", "INTEGER")
     # Recover intervals from the original schedule once, before any rescheduling.
     _conn.execute("""
         UPDATE queue SET interval_seconds=CASE
@@ -227,9 +249,15 @@ async def db_init():
         WHERE sent_at IS NULL AND cancelled_at IS NULL
     """)
     init_stats(_conn)
+    receipts.init_receipts(_conn)
     init_settings(_conn, TEST_MODE)
+    _conn.execute("""
+        UPDATE queue SET uncertain_at=COALESCE(uncertain_at, ?)
+        WHERE delivery_phase IS NOT NULL AND sent_at IS NULL AND cancelled_at IS NULL
+    """, (utcnow().timestamp(),))
     _conn.commit()
     TEST_MODE = get_test_mode(_conn)
+    repair_pending_schedules()
 
     # Older versions precomputed a deadline at /start, before delivery.
     await db_exec(
@@ -261,6 +289,35 @@ async def db_fetchall(sql: str, params=()):
         return cur.fetchall()
 
 
+def repair_pending_schedules():
+    """Repair only untouched partial schedules left by the old /start code."""
+    with _conn:
+        for user_id, started_at in _conn.execute("SELECT user_id, started_at FROM users WHERE paid=0").fetchall():
+            if started_at is None:
+                continue
+            rows = _conn.execute("""
+                SELECT step, run_at, interval_seconds, sent_at, cancelled_at, delivery_phase, media_sent_at
+                FROM queue WHERE user_id=? AND step BETWEEN 2 AND 10 ORDER BY step
+            """, (user_id,)).fetchall()
+            if len(rows) == 9 or any(any(value is not None for value in row[3:]) for row in rows):
+                continue
+            existing = {row[0]: row for row in rows}
+            fast = any(row[2] == TEST_DELAY_SECONDS for row in rows)
+            if 2 in existing:
+                fast = 0 < existing[2][1] - int(started_at) <= TEST_DELAY_SECONDS
+            elif not rows:
+                fast = is_test_user(user_id)
+            cursor = int(started_at)
+            for step in range(2, 11):
+                interval = TEST_DELAY_SECONDS if fast else (2400 if step == 2 else 86400 if step == 3 else 172800)
+                if step in existing:
+                    cursor = existing[step][1]
+                else:
+                    cursor += interval
+                    _conn.execute("INSERT INTO queue(user_id, step, run_at, interval_seconds) VALUES(?,?,?,?)",
+                                  (user_id, step, cursor, interval))
+
+
 # ================= ПЛАН ВОРОНКИ =================
 
 def build_schedule(start_dt: datetime, user_id: Optional[int] = None) -> List[Tuple[int, int]]:
@@ -288,34 +345,30 @@ async def enqueue_user(user_id: int, username: Optional[str]):
     now = utcnow()
     now_ts = now.timestamp()
 
-    existing = await db_fetchone("SELECT user_id FROM users WHERE user_id=?", (user_id,))
     schedule = build_schedule(now, user_id=user_id)
-
-    if existing is None:
-        await db_exec(
-            "INSERT INTO users(user_id, username, started_at, paid, discount_until, awaiting_receipt) "
-            "VALUES(?,?,?,0,?,0)",
-            (user_id, username, now_ts, None)
-        )
-    else:
-        await db_exec(
-            "UPDATE users SET username=?, started_at=?, paid=0, discount_until=?, awaiting_receipt=0 "
-            "WHERE user_id=?",
-            (username, now_ts, None, user_id)
-        )
-        await db_exec("DELETE FROM queue WHERE user_id=?", (user_id,))
-
+    rows = []
     previous_run_at = dt_to_ts(now)
     for step, run_at in schedule:
-        await db_exec(
-            "INSERT OR IGNORE INTO queue(user_id, step, run_at, sent_at, interval_seconds) VALUES(?,?,?,NULL,?)",
-            (user_id, step, run_at, run_at - previous_run_at)
-        )
+        rows.append((user_id, step, run_at, run_at - previous_run_at))
         previous_run_at = run_at
+    async with _db_lock:
+        with _conn:
+            _conn.execute("""
+                INSERT INTO users(user_id, username, started_at, paid, discount_until, awaiting_receipt)
+                VALUES(?,?,?,0,NULL,0) ON CONFLICT(user_id) DO UPDATE SET
+                username=excluded.username, started_at=excluded.started_at, paid=0,
+                discount_until=NULL, awaiting_receipt=0, receipt_received_at=NULL, receipt_quote_id=NULL
+            """, (user_id, username, now_ts))
+            _conn.execute("DELETE FROM queue WHERE user_id=?", (user_id,))
+            _conn.executemany(
+                "INSERT INTO queue(user_id, step, run_at, interval_seconds) VALUES(?,?,?,?)", rows
+            )
 
 async def reset_user_db(user_id: int):
-    await db_exec("DELETE FROM queue WHERE user_id=?", (user_id,))
-    await db_exec("DELETE FROM users WHERE user_id=?", (user_id,))
+    async with _db_lock:
+        with _conn:
+            _conn.execute("DELETE FROM queue WHERE user_id=?", (user_id,))
+            _conn.execute("DELETE FROM users WHERE user_id=?", (user_id,))
 
 async def is_paid(user_id: int) -> bool:
     row = await db_fetchone("SELECT paid FROM users WHERE user_id=?", (user_id,))
@@ -340,49 +393,96 @@ async def is_awaiting_receipt(user_id: int) -> bool:
     return bool(row and int(row[0]) == 1)
 
 async def confirm_purchase(user_id: int):
-    await db_exec("UPDATE users SET paid=1, awaiting_receipt=0, receipt_received_at=? WHERE user_id=?", (utcnow().timestamp(), user_id))
-    now_ts = dt_to_ts(utcnow())
-    await db_exec("UPDATE queue SET sent_at=? WHERE user_id=? AND sent_at IS NULL", (now_ts, user_id))
+    now_ts = utcnow().timestamp()
+    async with _db_lock:
+        with _conn:
+            _conn.execute("UPDATE users SET paid=1, awaiting_receipt=0, receipt_received_at=COALESCE(receipt_received_at, ?) WHERE user_id=?", (now_ts, user_id))
+            _conn.execute("UPDATE queue SET cancelled_at=? WHERE user_id=? AND sent_at IS NULL AND cancelled_at IS NULL", (now_ts, user_id))
 
 
 # ================= ОТПРАВКА ПО ШАГУ =================
 
+async def mark_uncertain(qid):
+    await db_exec("UPDATE queue SET uncertain_at=? WHERE id=? AND delivery_phase IS NOT NULL AND sent_at IS NULL AND cancelled_at IS NULL", (utcnow().timestamp(), qid))
+
+
+async def telegram_delivery(qid, phase, operation):
+    async with _db_lock:
+        with _conn:
+            claimed = _conn.execute("""
+                UPDATE queue SET delivery_phase=? WHERE id=? AND sent_at IS NULL
+                AND cancelled_at IS NULL AND delivery_phase IS NULL AND uncertain_at IS NULL
+                AND EXISTS (SELECT 1 FROM users WHERE user_id=queue.user_id AND paid=0)
+            """, (phase, qid))
+            if not claimed.rowcount:
+                return False, None
+    try:
+        result = await operation()
+    except (TelegramForbiddenError, TelegramBadRequest, TelegramRetryAfter):
+        await db_exec("UPDATE queue SET delivery_phase=NULL WHERE id=?", (qid,))
+        raise
+    except TelegramNetworkError as error:
+        # A failed TCP/DNS connection never reached Telegram. Other network errors
+        # may have occurred after acceptance and cannot safely be retried.
+        if isinstance(error.__cause__, ClientConnectorError):
+            await db_exec("UPDATE queue SET delivery_phase=NULL WHERE id=?", (qid,))
+            raise
+        await mark_uncertain(qid)
+        raise DeliveryUncertain() from error
+    except asyncio.CancelledError:
+        await mark_uncertain(qid)
+        raise
+    except Exception as error:
+        await mark_uncertain(qid)
+        raise DeliveryUncertain() from error
+    return True, result
+
+
 async def send_step(user_id: int, step: int, queue_id: Optional[int] = None):
     if await is_paid(user_id):
-        logging.info(f"Skip paid user={user_id} step={step}")
+        logging.info("Skip paid user=%s step=%s", user_id, step)
         return False
-
-    logging.info(f"send_step user={user_id} step={step}")
-
-    if step == 2:
+    row = await db_fetchone("""
+        SELECT id, media_sent_at FROM queue WHERE user_id=? AND step=?
+        AND sent_at IS NULL AND cancelled_at IS NULL AND (? IS NULL OR id=?)
+    """, (user_id, step, queue_id, queue_id))
+    if not row:
+        return False
+    qid, media_sent_at = row
+    logging.info("send_step user=%s step=%s", user_id, step)
+    if step == 2 and media_sent_at is None:
         media = [InputMediaPhoto(media=fid) for fid in STEP2_PHOTOS]
-        await bot.send_media_group(chat_id=user_id, media=media)
-        await bot.send_message(
-            chat_id=user_id,
-            text=text_2,
-            reply_markup=kb_action("купить", "pay")
-        )
-    elif step == 3:
-        await bot.send_message(user_id, text_3, reply_markup=kb_action("ХОЧУ", "pay"))
-    elif step == 4:
-        await bot.send_message(user_id, text_4, reply_markup=kb_details_and_go("УЗНАТЬ ПОДРОБНОСТИ", "ПРИНЯТЬ УЧАСТИЕ"))
-    elif step == 5:
-        await bot.send_message(user_id, text_5, reply_markup=kb_details_and_go("УЗНАТЬ ПОДРОБНОСТИ", "ЗАПИСАТЬСЯ"))
-    elif step == 6:
-        await bot.send_message(user_id, text_6, reply_markup=kb_details_and_go("ПОДРОБНЕЕ", "Я ИДУ!"))
-    elif step == 7:
-        await bot.send_message(user_id, text_7, reply_markup=kb_action("ПОНЯТЬ, ЧЕМ ХОЧУ ЗАНИМАТЬСЯ", "pay"))
-    elif step == 8:
-        await bot.send_message(user_id, text_8, reply_markup=kb_details_and_go("РАССКАЖИ ПОДРОБНЕЕ", "УГОВОРИЛА"))
-    elif step == 9:
-        await bot.send_message(user_id, text_9, reply_markup=kb_action("ДЕЛАЕМ!", "pay"))
-    elif step == 10:
-        await bot.send_message(user_id, text_10, reply_markup=kb_action("ЛЕТС ГОУ", "pay"))
-    else:
-        logging.warning(f"Unknown step={step} for user={user_id}")
+        delivered, _ = await telegram_delivery(qid, "media", lambda: bot.send_media_group(chat_id=user_id, media=media))
+        if not delivered:
+            return False
+        async with _db_lock:
+            with _conn:
+                updated = _conn.execute("""
+                    UPDATE queue SET media_sent_at=?, delivery_phase=NULL WHERE id=?
+                    AND sent_at IS NULL AND cancelled_at IS NULL
+                """, (utcnow().timestamp(), qid))
+                if not updated.rowcount:
+                    return False
+    messages = {
+        2: (text_2, kb_action("купить", "pay")),
+        3: (text_3, kb_action("ХОЧУ", "pay")),
+        4: (text_4, kb_details_and_go("УЗНАТЬ ПОДРОБНОСТИ", "ПРИНЯТЬ УЧАСТИЕ")),
+        5: (text_5, kb_details_and_go("УЗНАТЬ ПОДРОБНОСТИ", "ЗАПИСАТЬСЯ")),
+        6: (text_6, kb_details_and_go("ПОДРОБНЕЕ", "Я ИДУ!")),
+        7: (text_7, kb_action("ПОНЯТЬ, ЧЕМ ХОЧУ ЗАНИМАТЬСЯ", "pay")),
+        8: (text_8, kb_details_and_go("РАССКАЖИ ПОДРОБНЕЕ", "УГОВОРИЛА")),
+        9: (text_9, kb_action("ДЕЛАЕМ!", "pay")),
+        10: (text_10, kb_action("ЛЕТС ГОУ", "pay")),
+    }
+    if step not in messages:
         return False
-
-    await record_step_delivery(user_id, step, utcnow().timestamp(), queue_id=queue_id)
+    text, keyboard = messages[step]
+    delivered, result = await telegram_delivery(qid, "text", lambda: bot.send_message(chat_id=user_id, text=text, reply_markup=keyboard))
+    if not delivered:
+        return False
+    message_id = getattr(result, "message_id", None)
+    await record_step_delivery(user_id, step, utcnow().timestamp(), queue_id=qid,
+                               message_id=message_id if isinstance(message_id, int) else None)
     return True
 
 
@@ -397,12 +497,12 @@ def _reschedule_remaining(user_id: int, step: int, completed_at: float):
         _conn.execute("UPDATE queue SET run_at=?, retry_at=NULL WHERE id=?", (next_at, qid))
 
 
-async def record_step_delivery(user_id: int, step: int, sent_at: float, queue_id: Optional[int] = None):
+async def record_step_delivery(user_id: int, step: int, sent_at: float, queue_id: Optional[int] = None, message_id=None):
     async with _db_lock:
         with _conn:
             updated = _conn.execute(
-                "UPDATE queue SET sent_at=?, retry_at=NULL WHERE user_id=? AND step=? "
-                "AND sent_at IS NULL AND cancelled_at IS NULL AND (? IS NULL OR id=?)", (sent_at, user_id, step, queue_id, queue_id)
+                "UPDATE queue SET sent_at=?, retry_at=NULL, delivery_phase=NULL, uncertain_at=NULL, message_id=? WHERE user_id=? AND step=? "
+                "AND sent_at IS NULL AND cancelled_at IS NULL AND (? IS NULL OR id=?)", (sent_at, message_id, user_id, step, queue_id, queue_id)
             )
             if not updated.rowcount:
                 return
@@ -417,6 +517,9 @@ async def get_due_queue_items():
     return await db_fetchall(
         "SELECT q.id, q.user_id, q.step FROM queue AS q JOIN users AS u ON u.user_id=q.user_id "
         "WHERE q.sent_at IS NULL AND q.cancelled_at IS NULL AND u.paid=0 "
+        "AND q.delivery_phase IS NULL AND q.uncertain_at IS NULL "
+        "AND NOT EXISTS (SELECT 1 FROM receipt_deliveries AS r WHERE r.user_id=u.user_id "
+        "AND r.generation=(SELECT MIN(id) FROM queue WHERE user_id=u.user_id AND step BETWEEN 2 AND 10)) "
         "AND q.step BETWEEN 2 AND 10 AND q.run_at<=? AND COALESCE(q.retry_at, 0)<=? "
         "AND NOT EXISTS (SELECT 1 FROM queue AS earlier WHERE earlier.user_id=q.user_id "
         "AND earlier.step BETWEEN 2 AND 10 AND earlier.step<q.step "
@@ -457,10 +560,61 @@ async def process_queue_item(qid: int, user_id: int, step: int):
         await db_exec("UPDATE queue SET retry_at=? WHERE id=? AND sent_at IS NULL AND cancelled_at IS NULL",
                       (utcnow().timestamp() + max(1, error.retry_after), qid))
         logging.warning("Telegram rate limit user=%s step=%s; retry in %ss", user_id, step, error.retry_after)
+    except DeliveryUncertain:
+        logging.warning("Uncertain delivery queue_id=%s user=%s step=%s; awaiting review", qid, user_id, step)
     except Exception as error:
+        row = await db_fetchone("SELECT delivery_phase FROM queue WHERE id=?", (qid,))
+        if row and row[0]:
+            await mark_uncertain(qid)
+            logging.warning("Delivery checkpoint failed queue_id=%s; awaiting review", qid)
+            return
         logging.warning("Temporary queue error user=%s step=%s type=%s; retry deferred", user_id, step, type(error).__name__)
         await db_exec("UPDATE queue SET retry_at=? WHERE id=? AND sent_at IS NULL AND cancelled_at IS NULL",
                       (utcnow().timestamp() + QUEUE_RETRY_SECONDS, qid))
+
+
+async def process_receipt_delivery(delivery_id):
+    now = utcnow().timestamp()
+    async with _db_lock:
+        payload = receipts.claim_delivery(_conn, delivery_id, now, now - QUEUE_SEND_TIMEOUT - QUEUE_RETRY_SECONDS)
+    if payload is None:
+        return
+    admin_id, kind, file_id, caption = payload
+    try:
+        if kind == "photo":
+            await asyncio.wait_for(bot.send_photo(admin_id, photo=file_id, caption=caption), timeout=QUEUE_SEND_TIMEOUT)
+        else:
+            await asyncio.wait_for(bot.send_document(admin_id, document=file_id, caption=caption), timeout=QUEUE_SEND_TIMEOUT)
+    except asyncio.CancelledError:
+        async with _db_lock:
+            receipts.defer_delivery(_conn, delivery_id, utcnow().timestamp() + QUEUE_RETRY_SECONDS, "Interrupted")
+        raise
+    except Exception as error:
+        pause = max(1, error.retry_after) if isinstance(error, TelegramRetryAfter) else (
+            3600 if isinstance(error, (TelegramForbiddenError, TelegramBadRequest)) else QUEUE_RETRY_SECONDS
+        )
+        async with _db_lock:
+            receipts.defer_delivery(_conn, delivery_id, utcnow().timestamp() + pause, type(error).__name__)
+        logging.warning("Receipt forward deferred id=%s admin=%s type=%s", delivery_id, admin_id, type(error).__name__)
+    else:
+        try:
+            async with _db_lock:
+                receipts.finish_delivery(_conn, delivery_id, utcnow().timestamp())
+        except sqlite3.Error as error:
+            logging.warning("Receipt checkpoint failed id=%s type=%s; durable payload retained", delivery_id, type(error).__name__)
+            try:
+                async with _db_lock:
+                    receipts.defer_delivery(_conn, delivery_id, utcnow().timestamp() + QUEUE_RETRY_SECONDS, "CheckpointFailed")
+            except sqlite3.Error:
+                # The persisted claim also expires, so a DB outage cannot leave it stuck.
+                logging.warning("Receipt claim retained id=%s; will retry after expiry", delivery_id)
+
+
+async def get_due_receipts():
+    return await db_fetchall("""
+        SELECT id FROM receipt_deliveries WHERE sent_at IS NULL AND (sending_at IS NULL OR sending_at<=?)
+        AND COALESCE(retry_at, 0)<=? ORDER BY COALESCE(retry_at, 0), id LIMIT 50
+    """, (utcnow().timestamp() - QUEUE_SEND_TIMEOUT - QUEUE_RETRY_SECONDS, utcnow().timestamp()))
 
 
 # ================= ВОРКЕР ОЧЕРЕДИ =================
@@ -471,18 +625,26 @@ async def queue_worker():
     try:
         while True:
             try:
-                for user_id, task in list(active.items()):
+                for key, task in list(active.items()):
                     if task.done():
-                        del active[user_id]
+                        del active[key]
                         try:
                             task.result()
                         except Exception:
-                            logging.exception("Queue task failed user=%s", user_id)
+                            logging.exception("Queue task failed key=%s", key)
+                if len(active) < QUEUE_CONCURRENCY:
+                    for (delivery_id,) in await get_due_receipts():
+                        key = ("receipt", delivery_id)
+                        if key not in active:
+                            active[key] = asyncio.create_task(process_receipt_delivery(delivery_id))
+                        if len(active) >= QUEUE_CONCURRENCY:
+                            break
                 if len(active) < QUEUE_CONCURRENCY:
                     for qid, user_id, step in await get_due_queue_items():
-                        if user_id in active:
+                        key = ("funnel", user_id)
+                        if key in active:
                             continue
-                        active[user_id] = asyncio.create_task(process_queue_item(qid, user_id, step))
+                        active[key] = asyncio.create_task(process_queue_item(qid, user_id, step))
                         if len(active) >= QUEUE_CONCURRENCY:
                             break
                 if active:
@@ -525,24 +687,29 @@ def payment_message(price: Tuple[int, int]) -> str:
 @dp.message(CommandStart())
 async def start(message: Message):
     user_id = message.from_user.id
-    username = message.from_user.username
+    async with user_lock(user_id):
+        username = message.from_user.username
+        if await already_started(user_id):
+            await message.answer("Ты уже проходишь воронку 💛\nЕсли хочешь заново — напиши /reset")
+            return
+        if VIDEO_ENABLED:
+            await message.answer_video(video=VIDEO_FILE_ID, caption=text_1)
+        else:
+            await message.answer(text_1)
+        try:
+            await enqueue_user(user_id, username)
+        except sqlite3.Error as error:
+            logging.error("Start transaction failed user=%s type=%s", user_id, type(error).__name__)
+            await message.answer("Не удалось сохранить начало прохождения. Попробуй отправить /start ещё раз чуть позже.")
+            return
+        logging.info("User enqueued %s @%s", user_id, username)
 
-    if await already_started(user_id):
-        await message.answer("Ты уже проходишь воронку 💛\nЕсли хочешь заново — напиши /reset")
-        return
-
-    if VIDEO_ENABLED:
-        await message.answer_video(video=VIDEO_FILE_ID, caption=text_1)
-    else:
-        await message.answer(text_1)
-
-    await enqueue_user(user_id, username)
-    logging.info(f"User enqueued {user_id} @{username}")
 
 @dp.message(F.text == "/reset")
 async def reset_cmd(message: Message):
-    await reset_user_db(message.from_user.id)
-    await message.answer("Ок 👌 Я забыл(а) тебя. Можешь снова нажать /start")
+    async with user_lock(message.from_user.id):
+        await reset_user_db(message.from_user.id)
+        await message.answer("Ок 👌 Я забыл(а) тебя. Можешь снова нажать /start")
 
 @dp.message(F.video)
 async def get_video_id(message: Message):
@@ -571,8 +738,16 @@ async def pay_cb(callback: CallbackQuery):
         await callback.answer()
         return
 
+    await reconcile_offer_callback(callback)
     price = await get_current_price(user_id)
-    await callback.message.answer(payment_message(price), reply_markup=kb_pay_with_receipt(price))
+    result = await callback.message.answer(payment_message(price), reply_markup=kb_pay_with_receipt(price))
+    try:
+        async with _db_lock:
+            receipts.save_quote(_conn, user_id, getattr(getattr(result, "chat", None), "id", user_id),
+                                result.message_id, price, utcnow().timestamp())
+    except sqlite3.Error as error:
+        # The trusted callback's original payment text can recover this exact quote.
+        logging.warning("Payment quote checkpoint failed user=%s type=%s", user_id, type(error).__name__)
     await callback.answer()
 
 @dp.callback_query(F.data == "send_receipt")
@@ -584,63 +759,97 @@ async def send_receipt_cb(callback: CallbackQuery):
         await callback.answer()
         return
 
-    await set_awaiting_receipt(user_id, 1)
+    if not await already_started(user_id):
+        await callback.message.answer("Сначала отправь /start, затем снова нажми кнопку отправки чека.")
+        await callback.answer()
+        return
+    try:
+        async with _db_lock:
+            # Old payment messages can also supply their original displayed price.
+            text = getattr(callback.message, "text", None)
+            chat_id = callback.message.chat.id
+            for prices in (DISCOUNT_PRICE, FULL_PRICE):
+                if (text == unescape(re.sub(r"</?[bi]>", "", payment_message(prices)))
+                        and callback.message.from_user.id == bot.id and chat_id == user_id
+                        and getattr(callback.message, "forward_origin", None) is None):
+                    receipts.save_quote(_conn, user_id, chat_id, callback.message.message_id, prices, utcnow().timestamp())
+            receipts.select_quote(_conn, user_id, chat_id, callback.message.message_id)
+    except sqlite3.Error as error:
+        logging.warning("Receipt preparation failed user=%s type=%s", user_id, type(error).__name__)
+        await callback.message.answer("Не удалось подготовить отправку чека. Попробуй нажать кнопку ещё раз чуть позже.")
+        await callback.answer()
+        return
     await callback.message.answer("Отправь, пожалуйста, фото или файл чека сюда 👇")
     await callback.answer()
 
-@dp.message(F.photo)
-async def receipt_photo(message: Message):
-    user_id = message.from_user.id
-    if not await is_awaiting_receipt(user_id):
+
+async def reconcile_offer_callback(callback):
+    message = callback.message
+    if (getattr(message, "text", None) != unescape(re.sub(r"</?[bi]>", "", text_2))
+            or getattr(getattr(message, "from_user", None), "id", None) != bot.id
+            or getattr(getattr(message, "chat", None), "id", None) != callback.from_user.id):
         return
+    row = await db_fetchone("""
+        SELECT q.id FROM queue AS q JOIN users AS u ON u.user_id=q.user_id
+        WHERE q.user_id=? AND q.step=2 AND q.delivery_phase='text'
+        AND q.sent_at IS NULL AND q.cancelled_at IS NULL AND u.started_at<=?
+    """, (callback.from_user.id, message.date.timestamp()))
+    if row:
+        # Telegram's callback contains evidence of this exact message and its date.
+        await record_step_delivery(callback.from_user.id, 2, message.date.timestamp(),
+                                   queue_id=row[0], message_id=message.message_id)
 
-    price = await get_current_price(user_id)
-    photo = message.photo[-1].file_id
-
-    caption = (
-        f"✅ <b>ЧЕК ПОЛУЧЕН</b>\n"
-        f"User: <b>{message.from_user.full_name}</b>\n"
-        f"Username: @{message.from_user.username}\n"
-        f"User ID: <code>{user_id}</code>\n"
-        f"Тарифы на момент получения чека: <b>{format_price(price[0])} ₽ / {format_price(price[1])} ₽</b>\n"
-        f"Время (UTC): {utcnow().strftime('%Y-%m-%d %H:%M:%S')}"
+def receipt_caption(message, price, received_at):
+    name = escape(message.from_user.full_name[:120])
+    username = escape(message.from_user.username[:64]) if message.from_user.username else "—"
+    tariff = (
+        f"Тарифы при нажатии покупки: <b>{format_price(price[0])} ₽ / {format_price(price[1])} ₽</b>"
+        if price else "Тариф ранее не зафиксирован; сумму проверьте по чеку."
+    )
+    return (
+        f"✅ <b>ЧЕК ПОЛУЧЕН</b>\nUser: <b>{name}</b>\n"
+        f"Username: @{username}\nUser ID: <code>{message.from_user.id}</code>\n"
+        f"{tariff}\nВремя (UTC): {received_at.strftime('%Y-%m-%d %H:%M:%S')}"
     )
 
-    for admin_id in ADMIN_IDS:
-        try:
-            await bot.send_photo(admin_id, photo=photo, caption=caption)
-        except Exception as e:
-            logging.warning(f"Не удалось отправить админу {admin_id}: {e}")
 
-    await confirm_purchase(user_id)
-    await message.answer("Спасибо! ✅ Чек получен. Я скоро подтвержу оплату 💛")
+async def receive_receipt(message, kind, file_id):
+    user_id = message.from_user.id
+    async with user_lock(user_id):
+        if not await is_awaiting_receipt(user_id):
+            return
+        received_at = utcnow()
+        try:
+            async with _db_lock:
+                price = receipts.receipt_prices(_conn, user_id)
+                caption = receipt_caption(message, price, received_at)
+                delivery_ids = receipts.save_receipt(
+                    _conn, user_id, message.chat.id, message.message_id, kind, file_id,
+                    caption, received_at.timestamp(), ADMIN_IDS
+                )
+        except sqlite3.Error as error:
+            logging.error("Receipt storage failed user=%s type=%s", user_id, type(error).__name__)
+            await message.answer("Не удалось сохранить чек. Пожалуйста, пришли его ещё раз чуть позже — оплата пока не подтверждена.")
+            return
+        if not delivery_ids:
+            return
+        # All payloads are durable before any Telegram request is made.
+        await asyncio.gather(*(process_receipt_delivery(delivery_id) for delivery_id in delivery_ids))
+        if await is_paid(user_id):
+            await message.answer("Спасибо! ✅ Чек получен. Я скоро подтвержу оплату 💛")
+        else:
+            await message.answer("Чек сохранён ✅ Сейчас не удалось передать его администратору. Я повторю отправку автоматически; присылать чек заново не нужно.")
+
+
+@dp.message(F.photo)
+async def receipt_photo(message: Message):
+    await receive_receipt(message, "photo", message.photo[-1].file_id)
+
 
 @dp.message(F.document)
 async def receipt_document(message: Message):
-    user_id = message.from_user.id
-    if not await is_awaiting_receipt(user_id):
-        return
+    await receive_receipt(message, "document", message.document.file_id)
 
-    price = await get_current_price(user_id)
-    doc_id = message.document.file_id
-
-    caption = (
-        f"✅ <b>ЧЕК ПОЛУЧЕН</b>\n"
-        f"User: <b>{message.from_user.full_name}</b>\n"
-        f"Username: @{message.from_user.username}\n"
-        f"User ID: <code>{user_id}</code>\n"
-        f"Тарифы на момент получения чека: <b>{format_price(price[0])} ₽ / {format_price(price[1])} ₽</b>\n"
-        f"Время (UTC): {utcnow().strftime('%Y-%m-%d %H:%M:%S')}"
-    )
-
-    for admin_id in ADMIN_IDS:
-        try:
-            await bot.send_document(admin_id, document=doc_id, caption=caption)
-        except Exception as e:
-            logging.warning(f"Не удалось отправить админу {admin_id}: {e}")
-
-    await confirm_purchase(user_id)
-    await message.answer("Спасибо! ✅ Чек получен. Я скоро подтвержу оплату 💛")
 
 @dp.message(F.text == "/help")
 async def help_cmd(message: Message):
@@ -657,6 +866,9 @@ async def help_cmd(message: Message):
         "/test_on - тестовый режим: сообщения по 10 секунд, скидка 60 секунд для администраторов\n"
         "/test_off - обычный режим: первое сообщение через 40 минут, далее 24/48 часов, скидка 60 минут\n"
         "/debug_queue - посмотреть просроченные задания очереди\n\n"
+        "/resolve_delivery ID retry - повторить спорную отправку после проверки\n"
+        "/resolve_delivery ID media_sent - подтвердить, что фотографии дошли\n"
+        "/resolve_delivery ID sent ВРЕМЯ - подтвердить доставку текста (время ISO UTC)\n\n"
         "После смены режима сохранённые таймеры остаются прежними. "
         "Чтобы пройти заново с новыми таймерами: /reset, затем /start."
     )
@@ -697,7 +909,7 @@ async def status_cmd(message: Message):
         f"Скидка для новых предложений: {discount_duration(user_id)} сек.\n"
         f"Твоя текущая скидка: {discount}\n\n"
         "Сохранённые таймеры не пересчитываются при переключении.\n"
-        "Для нового прохождения: /reset, затем /start.\n\n" + statistics
+        "Для нового прохождения: /reset, затем /start.\n\n" + statistics + "\n\n" + await delivery_status()
     )
 
 
@@ -734,14 +946,71 @@ async def debug_queue_cmd(message: Message):
 
     if not rows:
         await message.answer("Просроченных сообщений нет ✅")
+    else:
+        lines = ["<b>Просроченные сообщения:</b>"]
+        for user_id, step, run_at in rows:
+            run_dt = datetime.fromtimestamp(run_at, tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+            lines.append(f"user={user_id}, step={step}, run_at={run_dt}")
+        await message.answer("\n".join(lines))
+
+    uncertain = await db_fetchall("""
+        SELECT id, user_id, step, delivery_phase FROM queue
+        WHERE uncertain_at IS NOT NULL AND sent_at IS NULL AND cancelled_at IS NULL ORDER BY id LIMIT 20
+    """)
+    if uncertain:
+        await message.answer("<b>Отправки с неизвестным результатом:</b>\n" + "\n".join(
+            f"ID={qid}, user={user_id}, step={step}, phase={phase}" for qid, user_id, step, phase in uncertain
+        ) + "\nПроверьте доставку у пользователя перед /resolve_delivery.")
+
+
+async def delivery_status():
+    pending = (await db_fetchone("SELECT COUNT(*) FROM receipt_deliveries WHERE sent_at IS NULL"))[0]
+    uncertain = (await db_fetchone("SELECT COUNT(*) FROM queue WHERE uncertain_at IS NOT NULL AND sent_at IS NULL AND cancelled_at IS NULL"))[0]
+    return f"Пересылки чеков в ожидании: {pending}\nОтправки, требующие проверки: {uncertain}"
+
+
+@dp.message(Command("resolve_delivery"))
+async def resolve_delivery_cmd(message: Message):
+    if message.from_user.id not in ADMIN_IDS:
         return
-
-    lines = ["<b>Просроченные сообщения:</b>"]
-    for user_id, step, run_at in rows:
-        run_dt = datetime.fromtimestamp(run_at, tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
-        lines.append(f"user={user_id}, step={step}, run_at={run_dt}")
-
-    await message.answer("\n".join(lines))
+    parts = message.text.split()
+    if (len(parts) not in (3, 4) or not parts[1].isdigit() or len(parts[1]) > 19
+            or not 0 < int(parts[1]) <= 2**63 - 1):
+        await message.answer("Формат: /resolve_delivery ID retry | media_sent | sent 2026-09-16T12:00:00Z")
+        return
+    qid, action = int(parts[1]), parts[2]
+    row = await db_fetchone("""
+        SELECT user_id, step, delivery_phase FROM queue WHERE id=? AND uncertain_at IS NOT NULL
+        AND sent_at IS NULL AND cancelled_at IS NULL
+    """, (qid,))
+    if row is None:
+        await message.answer("Спорное задание не найдено. Посмотрите /debug_queue.")
+        return
+    if action == "sent" and len(parts) == 4:
+        if row[2] != "text":
+            await message.answer("Для фотографий используйте media_sent; sent подтверждает доставку текста.")
+            return
+        try:
+            date = datetime.fromisoformat(parts[3].replace("Z", "+00:00"))
+            if date.tzinfo is None or not 0 < date.timestamp() <= utcnow().timestamp():
+                raise ValueError
+        except ValueError:
+            await message.answer("Укажите фактическое время доставки с часовым поясом, например 2026-09-16T12:00:00Z.")
+            return
+        await record_step_delivery(row[0], row[1], date.timestamp(), queue_id=qid)
+    elif action in {"retry", "media_sent"} and len(parts) == 3:
+        if action == "media_sent" and (row[1] != 2 or row[2] != "media"):
+            await message.answer("media_sent применяется только к спорной отправке фотографий этапа 2.")
+            return
+        await db_exec("""
+            UPDATE queue SET delivery_phase=NULL, uncertain_at=NULL, retry_at=NULL,
+            media_sent_at=CASE WHEN ?='media_sent' THEN ? ELSE media_sent_at END
+            WHERE id=? AND uncertain_at IS NOT NULL AND sent_at IS NULL AND cancelled_at IS NULL
+        """, (action, utcnow().timestamp(), qid))
+    else:
+        await message.answer("Формат: /resolve_delivery ID retry | media_sent | sent 2026-09-16T12:00:00Z")
+        return
+    await message.answer("Решение сохранено ✅ Посмотрите /status. Повтор разрешайте только после проверки: при неизвестном результате он может создать дубль.")
 
 
 # ================= ЗАПУСК =================
@@ -757,6 +1026,7 @@ async def main():
         worker.cancel()
         await asyncio.gather(worker, return_exceptions=True)
         await bot.session.close()
+        _conn.close()
 
 if __name__ == "__main__":
     asyncio.run(main())

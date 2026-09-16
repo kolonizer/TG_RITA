@@ -21,8 +21,8 @@ sudo -u rita-bot python3 -m venv "$release/.venv"
 sudo -u rita-bot "$release/.venv/bin/python" -m pip install -r "$release/requirements.txt"
 (
     cd "$release"
-    sudo -u rita-bot "$release/.venv/bin/python" -m unittest discover -s tests -v
-    sudo -u rita-bot "$release/.venv/bin/python" -m compileall -q bot.py tests
+    sudo -u rita-bot "$release/.venv/bin/python" -W error::ResourceWarning -m unittest discover -s tests -v
+    sudo -u rita-bot "$release/.venv/bin/python" -m compileall -q bot.py bot_stats.py bot_settings.py bot_receipts.py tests deploy
 )
 old_release=''
 if [[ -L /opt/rita-bot/current ]]; then
@@ -33,14 +33,13 @@ systemctl stop rita-bot.service
 if [[ -f /var/lib/rita-bot/bot.sqlite3 ]]; then
     python3 - <<'PY'
 import sqlite3
+from contextlib import closing
 from datetime import datetime, timezone
 from pathlib import Path
-source = sqlite3.connect('file:/var/lib/rita-bot/bot.sqlite3?mode=ro', uri=True)
 name = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S%fZ.sqlite3')
 path = Path('/var/backups/rita-bot') / name
-with sqlite3.connect(path) as target:
+with closing(sqlite3.connect('file:/var/lib/rita-bot/bot.sqlite3?mode=ro', uri=True)) as source, closing(sqlite3.connect(path)) as target:
     source.backup(target)
-source.close()
 path.chmod(0o600)
 PY
 fi
