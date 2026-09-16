@@ -7,6 +7,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional, List, Tuple
 
 from bot_stats import init_stats, get_stats, reset_stats, format_stats
+from bot_settings import init_settings, get_test_mode, set_test_mode
 
 from aiogram import Bot, Dispatcher, F
 from aiogram.types import (
@@ -183,7 +184,7 @@ def dt_to_ts(dt: datetime) -> int:
     return int(dt.timestamp())
 
 async def db_init():
-    global _conn
+    global _conn, TEST_MODE
 
     logging.info(f"Using DB path: {os.path.abspath(DB_PATH)}")
 
@@ -219,7 +220,9 @@ async def db_init():
     await _ensure_column("users", "paid", "INTEGER DEFAULT 0")
 
     init_stats(_conn)
+    init_settings(_conn, TEST_MODE)
     _conn.commit()
+    TEST_MODE = get_test_mode(_conn)
 
     # Older versions precomputed a deadline at /start, before delivery.
     await db_exec(
@@ -576,6 +579,23 @@ async def receipt_document(message: Message):
     await confirm_purchase(user_id)
     await message.answer("Спасибо! ✅ Чек получен. Я скоро подтвержу оплату 💛")
 
+@dp.message(F.text.in_({"/test_on", "/test_off"}))
+async def test_mode_cmd(message: Message):
+    global TEST_MODE
+    if message.from_user.id not in ADMIN_IDS:
+        return
+    enabled = message.text == "/test_on"
+    async with _db_lock:
+        set_test_mode(_conn, enabled)
+        TEST_MODE = enabled
+    mode = "Тестовый режим включён: интервалы и скидка по 10 секунд для администраторов." if enabled else "Обычный режим включён: скидка 60 минут, сообщения по обычному расписанию."
+    await message.answer(
+        mode + "\nВыбор сохранён и останется после перезапуска.\n"
+        "Для нового прохождения с выбранными таймерами: /reset, затем /start.\n"
+        "Проверка: /status."
+    )
+
+
 @dp.message(F.text == "/status")
 async def status_cmd(message: Message):
     user_id = message.from_user.id
@@ -645,8 +665,8 @@ async def debug_queue_cmd(message: Message):
 
 async def main():
     logging.info("Бот запущен 🚀")
-    logging.info("TEST_MODE=%s; accelerated timers apply to admins only (%ss)", TEST_MODE, TEST_DELAY_SECONDS)
     await db_init()
+    logging.info("TEST_MODE=%s; accelerated timers apply to admins only (%ss)", TEST_MODE, TEST_DELAY_SECONDS)
     asyncio.create_task(queue_worker())
     await dp.start_polling(bot)
 

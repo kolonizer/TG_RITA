@@ -309,6 +309,33 @@ class TestModeTests(DiscountTests):
         self.assertEqual(app.discount_duration(101), 3600)
 
 
+class ModeCommandTests(DatabaseTestCase):
+    async def test_admin_can_switch_both_modes_and_restart_keeps_choice(self):
+        admin = app.ADMIN_IDS[0]
+        for command, enabled in [("/test_on", True), ("/test_off", False)]:
+            message = SimpleNamespace(from_user=SimpleNamespace(id=admin), text=command, answer=AsyncMock())
+            before_users = await app.db_fetchall("SELECT * FROM users")
+            before_queue = await app.db_fetchall("SELECT * FROM queue")
+            await app.test_mode_cmd(message)
+            self.assertEqual(app.TEST_MODE, enabled)
+            self.assertEqual(app.get_test_mode(app._conn), enabled)
+            app._conn.close()
+            await app.db_init()
+            self.assertEqual(app.TEST_MODE, enabled)
+            self.assertEqual(app.discount_duration(admin), 10 if enabled else 3600)
+            self.assertEqual(await app.db_fetchall("SELECT * FROM users"), before_users)
+            self.assertEqual(await app.db_fetchall("SELECT * FROM queue"), before_queue)
+            message.answer.assert_awaited_once()
+
+    async def test_non_admin_cannot_switch_mode(self):
+        message = SimpleNamespace(from_user=SimpleNamespace(id=101), text="/test_on", answer=AsyncMock())
+        before = app.TEST_MODE
+        await app.test_mode_cmd(message)
+        self.assertEqual(app.TEST_MODE, before)
+        self.assertEqual(app.get_test_mode(app._conn), before)
+        message.answer.assert_not_awaited()
+
+
 class StatisticsTests(DatabaseTestCase):
     async def test_reset_starts_period_without_changing_users_or_queue(self):
         await app.confirm_purchase(101)
