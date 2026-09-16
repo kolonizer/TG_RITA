@@ -481,5 +481,5 @@ class StartReliabilityTests(DatabaseTestCase):
         self.assertEqual((await app.db_fetchone("SELECT COUNT(*) FROM queue WHERE user_id=101"))[0], 9)
 
     async def test_ninth_message_matches_twenty_four_day_course(self):
-        self.assertIn("24 дня", telegram_text(app.text_9))
+        self.assertIn("на протяжении 24 дней", telegram_text(app.text_9))
         self.assertNotIn("25 дней", telegram_text(app.text_9))
