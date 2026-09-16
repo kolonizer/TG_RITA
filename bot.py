@@ -27,7 +27,7 @@ DB_PATH = os.getenv("DB_PATH", "bot.sqlite3")
 VIDEO_ENABLED = True
 VIDEO_FILE_ID = "BAACAgIAAxkBAAIBnWmlig1rlhpT9x6c0xGlwdKasMIyAAIxkwACb24RSVk0ks25wXd2OgQ"
 
-TEST_MODE = False
+TEST_MODE = os.getenv("TEST_MODE", "false").strip().lower() in {"1", "true", "yes", "on"}
 TEST_DELAY_SECONDS = 10
 
 DISCOUNT_PRICE = (2333, 3888)
@@ -86,8 +86,16 @@ logging.basicConfig(
     ]
 )
 
-def delay(minutes: int = 0, hours: int = 0) -> int:
-    if TEST_MODE:
+def is_test_user(user_id: Optional[int]) -> bool:
+    return TEST_MODE and user_id in ADMIN_IDS
+
+
+def discount_duration(user_id: int) -> int:
+    return TEST_DELAY_SECONDS if is_test_user(user_id) else DISCOUNT_SECONDS
+
+
+def delay(minutes: int = 0, hours: int = 0, user_id: Optional[int] = None) -> int:
+    if is_test_user(user_id):
         return TEST_DELAY_SECONDS
     return minutes * 60 + hours * 3600
 
@@ -242,23 +250,23 @@ async def db_fetchall(sql: str, params=()):
 
 # ================= ПЛАН ВОРОНКИ =================
 
-def build_schedule(start_dt: datetime) -> List[Tuple[int, int]]:
+def build_schedule(start_dt: datetime, user_id: Optional[int] = None) -> List[Tuple[int, int]]:
     t0 = start_dt
 
-    t2 = t0 + timedelta(seconds=delay(minutes=40))
+    t2 = t0 + timedelta(seconds=delay(minutes=40, user_id=user_id))
 
     schedule = []
     schedule.append((2, dt_to_ts(t2)))
 
-    t3 = t2 + timedelta(seconds=delay(hours=24))
+    t3 = t2 + timedelta(seconds=delay(hours=24, user_id=user_id))
     schedule.append((3, dt_to_ts(t3)))
 
-    t4 = t3 + timedelta(seconds=delay(hours=48))
+    t4 = t3 + timedelta(seconds=delay(hours=48, user_id=user_id))
     schedule.append((4, dt_to_ts(t4)))
 
     cur = t4
     for step in range(5, 11):
-        cur = cur + timedelta(seconds=delay(hours=48))
+        cur = cur + timedelta(seconds=delay(hours=48, user_id=user_id))
         schedule.append((step, dt_to_ts(cur)))
 
     return schedule
@@ -268,7 +276,7 @@ async def enqueue_user(user_id: int, username: Optional[str]):
     now_ts = dt_to_ts(now)
 
     existing = await db_fetchone("SELECT user_id FROM users WHERE user_id=?", (user_id,))
-    schedule = build_schedule(now)
+    schedule = build_schedule(now, user_id=user_id)
 
     if existing is None:
         await db_exec(
@@ -346,7 +354,7 @@ async def send_step(user_id: int, step: int):
             with _conn:
                 _conn.execute(
                     "UPDATE users SET discount_until=? WHERE user_id=?",
-                    (sent_at + DISCOUNT_SECONDS, user_id),
+                    (sent_at + discount_duration(user_id), user_id),
                 )
                 _conn.execute(
                     "UPDATE queue SET sent_at=? WHERE user_id=? AND step=2",
@@ -612,6 +620,7 @@ async def debug_queue_cmd(message: Message):
 
 async def main():
     logging.info("Бот запущен 🚀")
+    logging.info("TEST_MODE=%s; accelerated timers apply to admins only (%ss)", TEST_MODE, TEST_DELAY_SECONDS)
     await db_init()
     asyncio.create_task(queue_worker())
     await dp.start_polling(bot)

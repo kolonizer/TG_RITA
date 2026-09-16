@@ -244,5 +244,48 @@ class DiscountTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone((await app.db_fetchone("SELECT discount_until FROM users WHERE user_id=303"))[0])
 
 
+class TestModeTests(DiscountTests):
+    async def asyncSetUp(self):
+        await super().asyncSetUp()
+        self.mode_patch = patch.object(app, "TEST_MODE", True)
+        self.mode_patch.start()
+
+    async def asyncTearDown(self):
+        self.mode_patch.stop()
+        await super().asyncTearDown()
+
+    async def test_admin_offer_and_discount_use_ten_seconds(self):
+        admin = app.ADMIN_IDS[0]
+        with patch.object(app, "utcnow", return_value=self.sent):
+            await app.enqueue_user(admin, "test_admin")
+        schedule = await app.db_fetchall(
+            "SELECT run_at FROM queue WHERE user_id=? ORDER BY step", (admin,)
+        )
+        self.assertEqual([row[0] for row in schedule], [int(self.sent.timestamp()) + 10 * i for i in range(1, 10)])
+        await self.deliver(admin)
+        for elapsed, expected in [(9.999999, app.DISCOUNT_PRICE), (10, app.FULL_PRICE)]:
+            with patch.object(app, "utcnow", return_value=self.sent + timedelta(seconds=elapsed)):
+                self.assertEqual(await app.get_current_price(admin), expected)
+        app._conn.close()
+        await app.db_init()
+        with patch.object(app, "TEST_MODE", False), patch.object(app, "utcnow", return_value=self.sent + timedelta(seconds=10)):
+            self.assertEqual(await app.get_current_price(admin), app.FULL_PRICE)
+
+    async def test_normal_mode_restores_original_schedule_for_admin(self):
+        admin = app.ADMIN_IDS[0]
+        with patch.object(app, "TEST_MODE", False):
+            schedule = app.build_schedule(self.sent, user_id=admin)
+            self.assertEqual(schedule[0][1], int(self.sent.timestamp()) + 40 * 60)
+            self.assertEqual(schedule[1][1] - schedule[0][1], 24 * 3600)
+            self.assertEqual(schedule[2][1] - schedule[1][1], 48 * 3600)
+            self.assertEqual(app.discount_duration(admin), 3600)
+
+    async def test_non_admin_keeps_normal_schedule_in_test_mode(self):
+        schedule = app.build_schedule(self.sent, user_id=101)
+        self.assertEqual(schedule[0][1], int(self.sent.timestamp()) + 40 * 60)
+        self.assertEqual(schedule[1][1] - schedule[0][1], 24 * 3600)
+        self.assertEqual(app.discount_duration(101), 3600)
+
+
 if __name__ == "__main__":
     unittest.main()
