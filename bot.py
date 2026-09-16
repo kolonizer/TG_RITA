@@ -118,6 +118,17 @@ bot = Bot(
     default=DefaultBotProperties(parse_mode="HTML")
 )
 dp = Dispatcher()
+_update_tasks = set()
+
+
+@dp.update.outer_middleware()
+async def track_update_task(handler, event, data):
+    task = asyncio.current_task()
+    _update_tasks.add(task)
+    try:
+        return await handler(event, data)
+    finally:
+        _update_tasks.discard(task)
 
 # ================= ТЕКСТЫ =================
 
@@ -1015,6 +1026,13 @@ async def resolve_delivery_cmd(message: Message):
 
 # ================= ЗАПУСК =================
 
+async def stop_background_tasks(worker):
+    tasks = [worker, *list(_update_tasks)]
+    for task in tasks:
+        task.cancel()
+    await asyncio.gather(*tasks, return_exceptions=True)
+
+
 async def main():
     logging.info("Бот запущен 🚀")
     await db_init()
@@ -1023,10 +1041,11 @@ async def main():
     try:
         await dp.start_polling(bot, close_bot_session=False)
     finally:
-        worker.cancel()
-        await asyncio.gather(worker, return_exceptions=True)
-        await bot.session.close()
-        _conn.close()
+        await stop_background_tasks(worker)
+        try:
+            await bot.session.close()
+        finally:
+            _conn.close()
 
 if __name__ == "__main__":
     asyncio.run(main())

@@ -289,6 +289,34 @@ class ReceiptReliabilityTests(DatabaseTestCase):
                 worker.cancel()
                 await asyncio.gather(worker, return_exceptions=True)
 
+    async def test_shutdown_finishes_update_tasks_before_db_close_and_preserves_receipt(self):
+        started = asyncio.Event()
+        async def hang(*args, **kwargs):
+            started.set()
+            await asyncio.Event().wait()
+        async def handler(event, data):
+            await app.receipt_photo(message())
+        self.fake_bot.send_photo.side_effect = hang
+        with patch.object(app, "utcnow", return_value=self.sent):
+            update = asyncio.create_task(app.track_update_task(handler, None, {}))
+            worker = asyncio.create_task(asyncio.Event().wait())
+            try:
+                await asyncio.wait_for(started.wait(), timeout=1)
+            finally:
+                await app.stop_background_tasks(worker)
+                await asyncio.gather(update, return_exceptions=True)
+        self.assertTrue(update.cancelled())
+        self.assertTrue(worker.cancelled())
+        self.assertEqual(app._update_tasks, set())
+        self.assertEqual((await app.db_fetchone("SELECT COUNT(*) FROM receipt_deliveries WHERE sent_at IS NULL AND sending_at IS NULL"))[0], len(app.ADMIN_IDS))
+        app._conn.close()
+        await app.db_init()
+        self.fake_bot.send_photo.side_effect = None
+        with patch.object(app, "utcnow", return_value=self.sent + timedelta(seconds=30)):
+            for (delivery_id,) in await app.get_due_receipts():
+                await app.process_receipt_delivery(delivery_id)
+        self.assertTrue(await app.is_paid(101))
+
 
 class QueueReliabilityTests(DatabaseTestCase):
     async def qid(self):
