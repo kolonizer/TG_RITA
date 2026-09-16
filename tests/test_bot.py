@@ -242,6 +242,25 @@ class DiscountTests(unittest.IsolatedAsyncioTestCase):
         message.answer_video.assert_awaited_once_with(video=app.VIDEO_FILE_ID, caption=app.text_1)
         message.answer.assert_not_awaited()
         self.assertIsNone((await app.db_fetchone("SELECT discount_until FROM users WHERE user_id=303"))[0])
+    async def test_status_is_admin_only(self):
+        message = SimpleNamespace(from_user=SimpleNamespace(id=101), answer=AsyncMock())
+        await app.status_cmd(message)
+        message.answer.assert_not_awaited()
+
+    async def test_status_shows_mode_and_live_discount(self):
+        admin = app.ADMIN_IDS[0]
+        await app.enqueue_user(admin, "test_admin")
+        await self.deliver(admin)
+        message = SimpleNamespace(from_user=SimpleNamespace(id=admin), answer=AsyncMock())
+        with patch.object(app, "utcnow", return_value=self.sent + timedelta(seconds=5)):
+            await app.status_cmd(message)
+        text = message.answer.await_args.args[0]
+        self.assertIn("Бот работает", text)
+        self.assertIn("тестовый" if app.TEST_MODE else "обычный", text)
+        expected = app.discount_duration(admin) - 5
+        self.assertIn(f"осталось {expected:.1f} сек.", text)
+        telegram_text(text)
+
 
 
 class TestModeTests(DiscountTests):

@@ -573,6 +573,26 @@ async def receipt_document(message: Message):
     await confirm_purchase(user_id)
     await message.answer("Спасибо! ✅ Чек получен. Я скоро подтвержу оплату 💛")
 
+@dp.message(F.text == "/status")
+async def status_cmd(message: Message):
+    user_id = message.from_user.id
+    if user_id not in ADMIN_IDS:
+        return
+    row = await db_fetchone("SELECT discount_until FROM users WHERE user_id=?", (user_id,))
+    remaining = max(0, float(row[0]) - utcnow().timestamp()) if row and row[0] else 0
+    mode = "тестовый" if is_test_user(user_id) else "обычный"
+    interval = "10 секунд" if is_test_user(user_id) else "40 минут после видео, далее 24/48 часов"
+    discount = f"осталось {remaining:.1f} сек." if remaining > 0 else "не действует"
+    await message.answer(
+        f"Бот работает ✅\nРежим: <b>{mode}</b>\n"
+        f"Новые сообщения: {interval}\n"
+        f"Скидка для новых предложений: {discount_duration(user_id)} сек.\n"
+        f"Твоя текущая скидка: {discount}\n\n"
+        "Сохранённые таймеры не пересчитываются при переключении.\n"
+        "Для нового прохождения: /reset, затем /start."
+    )
+
+
 @dp.message(F.text == "/stats")
 async def stats_cmd(message: Message):
     if message.from_user.id not in ADMIN_IDS:
