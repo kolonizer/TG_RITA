@@ -3,6 +3,7 @@ import os
 import sqlite3
 import tempfile
 import unittest
+from contextlib import closing
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -44,6 +45,11 @@ def telegram_text(text):
 
 
 class MessageTests(unittest.TestCase):
+    def test_all_funnel_messages_have_valid_html_and_fit_text_limit(self):
+        for name in [f"text_{step}" for step in range(1, 11)] + ["DETAILS_TEXT"]:
+            with self.subTest(message=name):
+                telegram_text(getattr(app, name))
+
     def test_first_message_exact_text_and_html(self):
         self.assertEqual(telegram_text(app.text_2), FIRST_MESSAGE)
         self.assertEqual(app.bot.default.parse_mode, "HTML")
@@ -405,6 +411,58 @@ class StatisticsTests(DatabaseTestCase):
 
 
 class QueueRecoveryTests(DatabaseTestCase):
+    async def test_paid_user_is_not_selected_even_with_overdue_pending_queue(self):
+        await self.make_all_overdue()
+        await app.db_exec("UPDATE users SET paid=1 WHERE user_id=101")
+        with patch.object(app, "utcnow", return_value=self.sent):
+            self.assertEqual(await app.get_due_queue_items(), [])
+
+    async def test_reset_after_unblocking_creates_fresh_uncancelled_queue(self):
+        from aiogram.methods import SendMessage
+        self.fake_bot.send_media_group.side_effect = app.TelegramForbiddenError(
+            method=SendMessage(chat_id=101, text="test"), message="bot was blocked"
+        )
+        await self.run_item()
+        await app.reset_user_db(101)
+        self.fake_bot.send_media_group.side_effect = None
+        with patch.object(app, "utcnow", return_value=self.sent):
+            await app.enqueue_user(101, "unblocked")
+            self.assertEqual(await app.get_due_queue_items(), [])
+        await self.run_item(now=self.sent + timedelta(minutes=40))
+        self.assertEqual((await app.db_fetchone(
+            "SELECT COUNT(*) FROM queue WHERE user_id=101 AND cancelled_at IS NOT NULL"
+        ))[0], 0)
+        self.assertEqual((await app.db_fetchone(
+            "SELECT discount_until FROM users WHERE user_id=101"
+        ))[0], self.sent.timestamp() + 2400 + 3600)
+
+    async def test_shutdown_during_delivery_keeps_step_pending_after_reopen(self):
+        started = asyncio.Event()
+
+        async def hang(**kwargs):
+            started.set()
+            await asyncio.Event().wait()
+
+        self.fake_bot.send_media_group.side_effect = hang
+        qid = (await app.db_fetchone("SELECT id FROM queue WHERE user_id=101 AND step=2"))[0]
+        with patch.object(app, "utcnow", return_value=self.sent):
+            task = asyncio.create_task(app.process_queue_item(qid, 101, 2))
+            try:
+                await asyncio.wait_for(started.wait(), timeout=1)
+            finally:
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+        app._conn.close()
+        await app.db_init()
+        self.assertEqual(await app.db_fetchone(
+            "SELECT sent_at, cancelled_at, retry_at FROM queue WHERE id=?", (qid,)
+        ), (None, None, None))
+        self.assertIsNone((await app.db_fetchone(
+            "SELECT discount_until FROM users WHERE user_id=101"
+        ))[0])
+        with patch.object(app, "utcnow", return_value=self.sent):
+            self.assertEqual(await app.get_due_queue_items(), [(qid, 101, 2)])
+
     async def make_all_overdue(self, user_id=101):
         await app.db_exec("UPDATE queue SET run_at=? WHERE user_id=?", (self.sent.timestamp() - 100, user_id))
 
@@ -560,7 +618,7 @@ class QueueRecoveryTests(DatabaseTestCase):
     async def test_legacy_schema_migration_preserves_rows_and_recovers_intervals(self):
         app._conn.close()
         legacy_path = str(Path(self.tmp.name) / 'legacy.sqlite3')
-        with sqlite3.connect(legacy_path) as legacy:
+        with closing(sqlite3.connect(legacy_path)) as legacy, legacy:
             legacy.execute('CREATE TABLE users(user_id INTEGER PRIMARY KEY, username TEXT, started_at INTEGER, paid INTEGER DEFAULT 0, discount_until INTEGER, awaiting_receipt INTEGER DEFAULT 0)')
             legacy.execute('CREATE TABLE queue(id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, step INTEGER, run_at INTEGER, sent_at INTEGER, UNIQUE(user_id,step))')
             legacy.execute('INSERT INTO users(user_id, started_at) VALUES(999, 0)')
