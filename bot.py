@@ -766,7 +766,7 @@ async def send_receipt_cb(callback: CallbackQuery):
     user_id = callback.from_user.id
 
     if await is_paid(user_id):
-        await callback.message.answer("Покупка уже подтверждена ✅")
+        await callback.message.answer("Ты уже отправил(а) чек ✅ Оплату проверит администратор.")
         await callback.answer()
         return
 
